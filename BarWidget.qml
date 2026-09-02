@@ -32,6 +32,10 @@ Panel {
   property string statusProjectName: ""
   property string statusClientName: ""
   property var recentTasks: []
+  property var allProjects: []
+  property bool addingTimer: false
+  property string newTimerProjectId: ""
+  property string newTimerTask: ""
   property real nowMs: Date.now()
   // true right before a refresh that should re-sort to the server's true
   // recency order (a fresh open); false for a refresh triggered by a
@@ -57,10 +61,35 @@ Panel {
     if (!tasksProc.running) tasksProc.running = true
   }
 
+  function refreshProjects() {
+    if (!projectsProc.running) projectsProc.running = true
+  }
+
   function startTask(projectId, task) {
     if (actionProc.running) return
     actionProc.command = ["notch", "start", "--project", String(projectId), "--task", task || ""]
     actionProc.running = true
+  }
+
+  // "Add a timer": the recent-tasks list only ever offers what's already
+  // been tracked before, so this is the only way to start a genuinely new
+  // task (or one on a project you haven't used recently) from the popout
+  // instead of falling back to the full TUI.
+  function openAddTimer() {
+    addingTimer = true
+    newTimerTask = ""
+    if (allProjects.length > 0 && newTimerProjectId === "") newTimerProjectId = String(allProjects[0].id)
+  }
+
+  function cancelAddTimer() {
+    addingTimer = false
+  }
+
+  function submitAddTimer() {
+    var id = parseInt(newTimerProjectId, 10)
+    if (!id || id <= 0) return
+    startTask(id, newTimerTask)
+    addingTimer = false
   }
 
   function stopTimer() {
@@ -81,6 +110,9 @@ Panel {
   onOpenedChanged: if (opened) {
     tasksNeedFreshSort = true
     refreshTasks()
+    refreshProjects()
+  } else {
+    addingTimer = false
   }
 
   Process {
@@ -114,6 +146,19 @@ Panel {
           ? incoming
           : Model.reorderTasksInPlace(root.recentTasks, incoming)
         root.tasksNeedFreshSort = false
+      }
+    }
+  }
+
+  Process {
+    id: projectsProc
+    command: ["notch", "projects", "-json"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.allProjects = Model.parseProjects(text)
+        if (root.allProjects.length > 0 && root.newTimerProjectId === "")
+          root.newTimerProjectId = String(root.allProjects[0].id)
       }
     }
   }
@@ -510,6 +555,79 @@ Panel {
                   width: parent.width
                 }
               }
+            }
+          }
+        }
+
+        // ---------- Add a timer ----------
+        // The recent-timers list above only ever offers what's already
+        // been tracked before (see notch's "tasks" subcommand), so this is
+        // the only way to start a genuinely new task, or one on a project
+        // you haven't used recently, without dropping to the full TUI.
+        Column {
+          width: parent.width
+          spacing: Style.space(8)
+
+          Button {
+            width: parent.width
+            leftAlign: true
+            iconText: root.addingTimer ? "" : "󰐕"
+            text: root.addingTimer ? "Cancel" : "Add timer"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            bordered: true
+            onClicked: root.addingTimer ? root.cancelAddTimer() : root.openAddTimer()
+          }
+
+          Column {
+            width: parent.width
+            visible: root.addingTimer
+            spacing: Style.space(8)
+
+            Text {
+              visible: root.allProjects.length === 0
+              textFormat: Text.PlainText
+              text: "No projects yet -- create one in the notch TUI first."
+              color: Qt.darker(root.bar.foreground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+              width: parent.width
+            }
+
+            Dropdown {
+              visible: root.allProjects.length > 0
+              width: parent.width
+              showLabel: false
+              value: root.newTimerProjectId
+              options: root.allProjects.map(function(p) {
+                return { value: String(p.id), label: (p.clientName ? p.clientName + " › " : "") + p.name }
+              })
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onChanged: function(v) { root.newTimerProjectId = v }
+            }
+
+            TextField {
+              visible: root.allProjects.length > 0
+              width: parent.width
+              placeholderText: "What are you working on?"
+              text: root.newTimerTask
+              foreground: root.bar.foreground
+              font.family: root.bar.fontFamily
+              onTextChanged: root.newTimerTask = text
+              onAccepted: root.submitAddTimer()
+            }
+
+            Button {
+              visible: root.allProjects.length > 0
+              width: parent.width
+              leftAlign: true
+              text: "Start"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              bordered: true
+              onClicked: root.submitAddTimer()
             }
           }
         }
