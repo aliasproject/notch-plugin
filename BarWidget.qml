@@ -376,22 +376,53 @@ Panel {
     id: launchProc
   }
 
-  // Correctness poll: catches state changes made elsewhere -- the TUI
-  // (starting/stopping/editing an entry there), another client, whatever
-  // -- that this widget wouldn't otherwise see. Refreshes tasks as well as
-  // status now, not just status: the recent-timers list previously only
-  // ever refreshed right after an action *this widget* took, so an edit
-  // made in the TUI while the popout sat open wouldn't show up in the
-  // list at all until it was closed and reopened. tasksRefreshPending
-  // (see actionProc for the full reasoning) keeps status and tasks
-  // sequenced correctly here too, not just after this widget's own
-  // actions -- reused as-is, no separate mechanism needed. Ticking between
-  // polls is handled locally below, so this doesn't need to be
-  // sub-second, but 2s (matching the poll rate notch's own README already
-  // suggests for waybar) reads as close enough to "immediate" without
-  // spawning a process every frame.
+  // Same path notch's own resolveDBPath() resolves: $NOTCH_DB if set,
+  // else ~/.local/share/notch/notch.db.
+  readonly property string dbPath: {
+    var envDb = Quickshell.env("NOTCH_DB")
+    if (envDb) return envDb
+    return Quickshell.env("HOME") + "/.local/share/notch/notch.db"
+  }
+
+  // Fast path for picking up a change made elsewhere -- the TUI, another
+  // "notch" invocation, whatever -- instead of waiting on the slow poll
+  // fallback below. Watches "<dbPath>-wal", not dbPath itself: notch opens
+  // sqlite in WAL mode (internal/db.Open's PRAGMA), so an ordinary write
+  // lands in the -wal file, not the main one, which only gets touched on
+  // the occasional checkpoint -- watching the wrong path would silently
+  // just never fire. Mirrors notch's own internal/db.Watch (used by the
+  // TUI for this exact purpose) and weather/Panel.qml's locationFile,
+  // the precedent for this FileView{watchChanges:true} idiom in this
+  // shell. Confirmed firing on a real notch write (StartEntry through a
+  // WAL-mode DB) via internal/db/watch_test.go's TestWatch_FiresOnRealWrite
+  // -- same mechanism, just the Go side of it.
+  FileView {
+    id: dbWalWatch
+    path: root.dbPath + "-wal"
+    watchChanges: true
+    onFileChanged: dbChangeDebounce.restart()
+  }
+
+  // Coalesces the burst of events one write can produce (main file, -wal,
+  // -shm can each touch) into one refresh, same reasoning and duration as
+  // notch's own internal/db.Watch debounce.
   Timer {
-    interval: 2000
+    id: dbChangeDebounce
+    interval: 75
+    onTriggered: {
+      root.tasksRefreshPending = true
+      root.refreshStatus()
+    }
+  }
+
+  // Fallback only: dbWalWatch above is the fast, primary path. This just
+  // guards against it having failed to start (e.g. NOTCH_DB pointed
+  // somewhere that doesn't exist yet) or missed an event, so a refresh
+  // still happens eventually rather than never -- same "watch primary,
+  // slow poll fallback" split notch's own TUI now uses (TickMsg's
+  // tickFallbackTicks vs dbWatchMsg).
+  Timer {
+    interval: 15000
     running: true
     repeat: true
     triggeredOnStart: true
