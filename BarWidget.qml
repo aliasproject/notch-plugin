@@ -438,6 +438,20 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // Without this, PanelKeyCatcher's own Keys.onPressed -- Keys.priority:
+      // BeforeItem, so it sees every key before any focused descendant --
+      // unconditionally accept()s Down/Up/Left/Right/j/k/h/l/x/X/Return/
+      // Space/Tab/Escape and returns, so none of them ever reach a focused
+      // TextField at all: arrow keys silently do nothing (moveRequested
+      // isn't wired to anything either), and typing a "j"/"k"/"h"/"l"/"x"
+      // character doesn't insert it. This is exactly the case
+      // PanelKeyCatcher's own doc comment calls out ("a panel with an
+      // inline editor... must set blocked: editor.activeFocus so the
+      // editor receives keys normally") -- blocked for the whole time the
+      // Add Timer form is open, not just per-field, since a focused Start
+      // button needs Return/Space to reach its own Keys.onReturnPressed
+      // too, not just the text fields.
+      blocked: root.addingTimer
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
@@ -601,6 +615,26 @@ Panel {
               anchors.margins: Style.space(10)
               spacing: Style.space(8)
 
+              // Escape cancels the form instead of closing the whole
+              // popout (PanelKeyCatcher's own Escape-closes-panel handling
+              // is blocked for as long as the form is open -- see
+              // keyCatcher.blocked above). Standard QtQuick key bubbling:
+              // an unaccepted key event from whichever field has focus
+              // propagates up through its ancestors, so this doesn't need
+              // focus itself.
+              Keys.onPressed: function(event) {
+                if (event.key === Qt.Key_Escape) {
+                  root.cancelAddTimer()
+                  event.accepted = true
+                }
+              }
+
+              // Enter advances field-to-field (Task -> Client -> Project ->
+              // Notes -> submit), matching the TUI's own new-timer form
+              // flow. NameField's advanceRequested only fires when Enter
+              // is pressed with no suggestion highlighted -- with one
+              // highlighted, Enter selects it instead (see NameField's own
+              // Keys.onPressed).
               TextField {
                 id: addTimerTaskField
                 width: parent.width
@@ -609,9 +643,11 @@ Panel {
                 foreground: root.bar.foreground
                 font.family: root.bar.fontFamily
                 onTextChanged: root.newTimerTask = text
+                onAccepted: addTimerClientField.focusField()
               }
 
               NameField {
+                id: addTimerClientField
                 width: parent.width
                 placeholderText: "Client name (or leave blank)"
                 text: root.newTimerClientText
@@ -620,9 +656,11 @@ Panel {
                 fontFamily: root.bar.fontFamily
                 onTextEdited: function(t) { root.newTimerClientText = t }
                 onOptionSelected: function(opt) { root.newTimerClientText = opt.name }
+                onAdvanceRequested: addTimerProjectField.focusField()
               }
 
               NameField {
+                id: addTimerProjectField
                 width: parent.width
                 placeholderText: "Project name (or leave blank)"
                 text: root.newTimerProjectText
@@ -638,9 +676,11 @@ Panel {
                   // client field).
                   if (opt.clientName) root.newTimerClientText = opt.clientName
                 }
+                onAdvanceRequested: addTimerNotesField.forceActiveFocus()
               }
 
               TextField {
+                id: addTimerNotesField
                 width: parent.width
                 placeholderText: "Notes (optional)"
                 text: root.newTimerNotes
@@ -655,6 +695,7 @@ Panel {
                 leftAlign: true
                 text: "Start"
                 enabled: root.canSubmitAddTimer
+                focusable: true
                 foreground: root.bar.foreground
                 fontFamily: root.bar.fontFamily
                 bordered: true
@@ -832,6 +873,19 @@ Panel {
 
     signal textEdited(string text)
     signal optionSelected(var option)
+    // Enter with no suggestion highlighted -- the caller decides what
+    // "next" means (this component has no idea what field follows it).
+    signal advanceRequested()
+
+    // Not an override of Item's own forceActiveFocus() (redeclaring an
+    // inherited method's name is asking for trouble this can't be tested
+    // for ahead of time) -- a distinctly-named function that redirects
+    // focus to the actual input, since a plain Item can't itself hold
+    // text-editing focus.
+    function focusField() { nameFieldInput.forceActiveFocus() }
+
+    // -1 = nothing highlighted (typing, mouse not hovering a row).
+    property int currentIndex: -1
 
     readonly property string _query: text.trim().toLowerCase()
     readonly property bool _hasExactMatch: options.some(function(o) { return o.name.toLowerCase() === nameFieldRoot._query })
@@ -849,6 +903,11 @@ Panel {
     readonly property bool _showCreateHint: nameFieldRoot._query !== "" && !nameFieldRoot._hasExactMatch
     readonly property bool _showSuggestions: nameFieldRoot._matches.length > 0 || nameFieldRoot._showCreateHint
 
+    // Resets whenever the search text changes, which is the only thing
+    // that meaningfully invalidates a stale highlighted index (_matches
+    // is entirely derived from text).
+    onTextChanged: currentIndex = -1
+
     implicitWidth: Style.space(200)
     implicitHeight: nameFieldColumn.implicitHeight
 
@@ -858,6 +917,7 @@ Panel {
       spacing: Style.space(4)
 
       TextField {
+        id: nameFieldInput
         width: parent.width
         placeholderText: nameFieldRoot.placeholderText
         text: nameFieldRoot.text
@@ -867,6 +927,38 @@ Panel {
         onTextChanged: {
           nameFieldRoot.text = text
           nameFieldRoot.textEdited(text)
+        }
+
+        // Arrow-key/Enter navigation over _matches -- mirrors
+        // SearchableDropdown's own search-field-drives-a-result-list
+        // shape (qs.Ui), just inline instead of in a floating popup.
+        // Falls through (event left unaccepted) for anything not
+        // explicitly handled here, e.g. Left/Right/Backspace edit the
+        // text normally, and Tab moves to the next field via the
+        // standard focus chain once PanelKeyCatcher is blocked.
+        Keys.onPressed: function(event) {
+          if (event.key === Qt.Key_Down) {
+            if (nameFieldRoot._matches.length === 0) return
+            nameFieldRoot.currentIndex = Math.min(nameFieldRoot.currentIndex + 1, nameFieldRoot._matches.length - 1)
+            event.accepted = true
+          } else if (event.key === Qt.Key_Up) {
+            if (nameFieldRoot.currentIndex < 0) return
+            nameFieldRoot.currentIndex -= 1
+            event.accepted = true
+          } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            if (nameFieldRoot.currentIndex >= 0 && nameFieldRoot.currentIndex < nameFieldRoot._matches.length) {
+              var opt = nameFieldRoot._matches[nameFieldRoot.currentIndex]
+              nameFieldRoot.text = opt.name
+              nameFieldRoot.optionSelected(opt)
+              nameFieldRoot.currentIndex = -1
+            } else {
+              nameFieldRoot.advanceRequested()
+            }
+            event.accepted = true
+          } else if (event.key === Qt.Key_Escape && nameFieldRoot.currentIndex >= 0) {
+            nameFieldRoot.currentIndex = -1
+            event.accepted = true
+          }
         }
       }
 
@@ -880,10 +972,12 @@ Panel {
           Rectangle {
             id: matchRow
             required property var modelData
+            required property int index
             width: parent.width
             height: matchLabel.implicitHeight + Style.space(10)
             radius: Style.cornerRadius
-            color: matchMouse.containsMouse ? Style.hoverFillFor(nameFieldRoot.foreground, nameFieldRoot.accent) : "transparent"
+            color: (matchMouse.containsMouse || index === nameFieldRoot.currentIndex)
+              ? Style.hoverFillFor(nameFieldRoot.foreground, nameFieldRoot.accent) : "transparent"
 
             Behavior on color { ColorAnimation { duration: 120 } }
 
@@ -907,6 +1001,7 @@ Panel {
               anchors.fill: parent
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
+              onEntered: nameFieldRoot.currentIndex = matchRow.index
               onClicked: {
                 nameFieldRoot.text = matchRow.modelData.name
                 nameFieldRoot.optionSelected(matchRow.modelData)
