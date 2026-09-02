@@ -37,10 +37,14 @@ Panel {
   property bool addingTimer: false
   // Order matches notch's own TUI new-timer form: task, then client, then
   // project, then notes (internal/ui/views/timers.go's fieldTask/
-  // fieldClient/fieldProject/fieldNotes).
+  // fieldClient/fieldProject/fieldNotes). Client/project are free text,
+  // not an ID selection -- resolved-or-created server-side by "notch
+  // start --client-name/--project-name" (db.ResolveOrCreateProject),
+  // exactly like the TUI's own form always does regardless of whether you
+  // picked a suggestion or typed a new name.
   property string newTimerTask: ""
-  property string newTimerClientId: ""
-  property string newTimerProjectId: ""
+  property string newTimerClientText: ""
+  property string newTimerProjectText: ""
   property string newTimerNotes: ""
   property real nowMs: Date.now()
   // true right before a refresh that should re-sort to the server's true
@@ -88,13 +92,23 @@ Panel {
     return [activeEntry].concat(rest)
   }
 
-  // Project picker's options, narrowed to the selected client -- "task,
-  // then client, then project" only works as a funnel if picking a client
-  // actually shrinks the project list. Falls back to every project if
-  // nothing's selected yet (startup) rather than showing an empty list.
-  readonly property var newTimerProjectsForClient: newTimerClientId === ""
-    ? allProjects
-    : allProjects.filter(function(p) { return String(p.clientId) === newTimerClientId })
+  // Project field's suggestion pool, narrowed to whichever client is
+  // currently typed IF it exactly (case-insensitively) matches an
+  // existing client -- "task, then client, then project" only works as a
+  // funnel if picking a real client actually shrinks the project list.
+  // A new (not-yet-existing) or blank client can't scope anything yet, so
+  // every project is offered instead of none.
+  readonly property var newTimerMatchedClient: {
+    var q = newTimerClientText.trim().toLowerCase()
+    if (q === "") return null
+    for (var i = 0; i < allClients.length; i++) {
+      if (allClients[i].name.toLowerCase() === q) return allClients[i]
+    }
+    return null
+  }
+  readonly property var newTimerProjectOptions: newTimerMatchedClient
+    ? allProjects.filter(function(p) { return p.clientId === newTimerMatchedClient.id })
+    : allProjects
 
   function refreshStatus() {
     if (!statusProc.running) statusProc.running = true
@@ -112,6 +126,8 @@ Panel {
     if (!clientsProc.running) clientsProc.running = true
   }
 
+  // Used by the recent-timers list, which already has a concrete project
+  // ID for each row.
   function startTask(projectId, task, notes) {
     if (actionProc.running) return
     var cmd = ["notch", "start", "--project", String(projectId), "--task", task || ""]
@@ -120,37 +136,41 @@ Panel {
     actionProc.running = true
   }
 
-  // Called when the client dropdown changes: the project dropdown's own
-  // options (newTimerProjectsForClient) narrow automatically, but its
-  // *selected* value doesn't follow along on its own -- without this,
-  // switching client could leave newTimerProjectId pointing at a project
-  // that's no longer even in the now-filtered list.
-  function selectNewTimerClient(clientId) {
-    newTimerClientId = clientId
-    var projects = newTimerProjectsForClient
-    newTimerProjectId = projects.length > 0 ? String(projects[0].id) : ""
+  // Used by the Add Timer form, which only has typed client/project names
+  // (possibly brand new ones) -- notch resolves-or-creates them server-side.
+  function startTaskByName(clientName, projectName, task, notes) {
+    if (actionProc.running) return
+    var cmd = ["notch", "start", "--task", task || ""]
+    if (clientName) cmd.push("--client-name", clientName)
+    if (projectName) cmd.push("--project-name", projectName)
+    if (notes) cmd.push("--notes", notes)
+    actionProc.command = cmd
+    actionProc.running = true
   }
 
   // "Add a timer": the recent-tasks list only ever offers what's already
   // been tracked before, so this is the only way to start a genuinely new
-  // task (or one on a project you haven't used recently) from the popout
-  // instead of falling back to the full TUI. Field order matches notch's
-  // own TUI new-timer form: task, then client, then project, then notes.
+  // task (or a brand new client/project) from the popout instead of
+  // falling back to the full TUI. Field order matches notch's own TUI
+  // new-timer form: task, then client, then project, then notes.
   function openAddTimer() {
     addingTimer = true
     newTimerTask = ""
+    newTimerClientText = ""
+    newTimerProjectText = ""
     newTimerNotes = ""
-    if (newTimerClientId === "" && allClients.length > 0) selectNewTimerClient(String(allClients[0].id))
   }
 
   function cancelAddTimer() {
     addingTimer = false
   }
 
+  readonly property bool canSubmitAddTimer: newTimerTask.trim() !== ""
+    && (newTimerClientText.trim() !== "" || newTimerProjectText.trim() !== "")
+
   function submitAddTimer() {
-    var id = parseInt(newTimerProjectId, 10)
-    if (!id || id <= 0) return
-    startTask(id, newTimerTask, newTimerNotes)
+    if (!canSubmitAddTimer) return
+    startTaskByName(newTimerClientText.trim(), newTimerProjectText.trim(), newTimerTask.trim(), newTimerNotes.trim())
     addingTimer = false
   }
 
@@ -218,14 +238,7 @@ Panel {
     command: ["notch", "projects", "-json"]
     stdout: StdioCollector {
       waitForEnd: true
-      // Selection is driven by client (selectNewTimerClient), not here --
-      // this only needs to backfill a project once the list first arrives,
-      // for whichever client (if any) is already selected.
-      onStreamFinished: {
-        root.allProjects = Model.parseProjects(text)
-        if (root.newTimerProjectId === "" && root.newTimerProjectsForClient.length > 0)
-          root.newTimerProjectId = String(root.newTimerProjectsForClient[0].id)
-      }
+      onStreamFinished: root.allProjects = Model.parseProjects(text)
     }
   }
 
@@ -234,11 +247,7 @@ Panel {
     command: ["notch", "clients", "-json"]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: {
-        root.allClients = Model.parseClients(text)
-        if (root.newTimerClientId === "" && root.allClients.length > 0)
-          root.selectNewTimerClient(String(root.allClients[0].id))
-      }
+      onStreamFinished: root.allClients = Model.parseClients(text)
     }
   }
 
@@ -432,6 +441,98 @@ Panel {
         anchors.top: parent.top
         spacing: Style.space(14)
 
+        // ---------- Add a timer: "+" trigger at the top, form expands
+        // right below it ----------
+        // The recent-timers list further down only ever offers what's
+        // already been tracked before, so this is the only way to start a
+        // genuinely new task -- or a brand new client/project -- from the
+        // popout instead of falling back to the full TUI. Field order
+        // (task, client, project, notes) and the resolve-existing-or-create
+        // behavior for client/project both match notch's own TUI new-timer
+        // form exactly (see db.ResolveOrCreateProject); NameField's
+        // suggestion list + "+ Create" hint is this popout's own take on
+        // the TUI's live-filtered client/project fields, not a literal
+        // copy of its floating-list layout.
+        Item {
+          width: parent.width
+          height: addTimerToggle.height
+
+          PanelActionButton {
+            id: addTimerToggle
+            anchors.right: parent.right
+            iconText: root.addingTimer ? "󰅖" : "󰐕"
+            fontFamily: root.bar.fontFamily
+            foreground: root.bar.foreground
+            tooltipText: root.addingTimer ? "Cancel" : "Add timer"
+            bordered: true
+            onClicked: root.addingTimer ? root.cancelAddTimer() : root.openAddTimer()
+          }
+        }
+
+        Column {
+          width: parent.width
+          visible: root.addingTimer
+          spacing: Style.space(8)
+
+          TextField {
+            width: parent.width
+            placeholderText: "What are you working on?"
+            text: root.newTimerTask
+            foreground: root.bar.foreground
+            font.family: root.bar.fontFamily
+            onTextChanged: root.newTimerTask = text
+          }
+
+          NameField {
+            width: parent.width
+            placeholderText: "Client name (or leave blank)"
+            text: root.newTimerClientText
+            options: root.allClients
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            onTextEdited: function(t) { root.newTimerClientText = t }
+            onOptionSelected: function(opt) { root.newTimerClientText = opt.name }
+          }
+
+          NameField {
+            width: parent.width
+            placeholderText: "Project name (or leave blank)"
+            text: root.newTimerProjectText
+            options: root.newTimerProjectOptions
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            onTextEdited: function(t) { root.newTimerProjectText = t }
+            onOptionSelected: function(opt) {
+              root.newTimerProjectText = opt.name
+              // Picking an existing project pins down its client too --
+              // matches the TUI's own project-select behavior (see
+              // timers.go: selecting a project match also fills the
+              // client field).
+              if (opt.clientName) root.newTimerClientText = opt.clientName
+            }
+          }
+
+          TextField {
+            width: parent.width
+            placeholderText: "Notes (optional)"
+            text: root.newTimerNotes
+            foreground: root.bar.foreground
+            font.family: root.bar.fontFamily
+            onTextChanged: root.newTimerNotes = text
+          }
+
+          Button {
+            width: parent.width
+            leftAlign: true
+            text: "Start"
+            enabled: root.canSubmitAddTimer
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            bordered: true
+            onClicked: root.submitAddTimer()
+          }
+        }
+
         // ---------- Hero: icon · task/client (labels) · live clock ----------
         // Same shape as shell/plugins/panels/power/Panel.qml's own
         // heroIcon/heroLabels/heroPercent row -- an icon on the left, a
@@ -441,15 +542,24 @@ Panel {
           width: parent.width
           implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, heroTime.implicitHeight)
 
-          Text {
+          // A large clickable stop button while running (not just an
+          // icon) -- same md-stop glyph and "stop, not pause" reasoning
+          // as the bar icon and list rows, just sized to match the hero's
+          // own visual weight instead of a small bar-icon slot. Disabled
+          // (no hover/click) when idle -- there's nothing to stop.
+          PanelActionButton {
             id: heroIcon
-            textFormat: Text.PlainText
-            text: "󱎫"
-            color: root.bar.foreground
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.display
+            iconText: root.running ? "󰓛" : "󱎫"
+            fontFamily: root.bar.fontFamily
+            fontSize: Style.font.display
+            size: Style.space(48)
+            foreground: root.bar.foreground
+            hoverColor: root.running ? root.bar.urgent : root.bar.foreground
+            enabled: root.running
+            tooltipText: root.running ? "Stop timer" : ""
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
+            onClicked: root.stopTimer()
           }
 
           Column {
@@ -634,105 +744,6 @@ Panel {
                   width: parent.width
                 }
               }
-            }
-          }
-        }
-
-        // ---------- Add a timer ----------
-        // The recent-timers list above only ever offers what's already
-        // been tracked before (see notch's "tasks" subcommand), so this is
-        // the only way to start a genuinely new task, or one on a project
-        // you haven't used recently, without dropping to the full TUI.
-        Column {
-          width: parent.width
-          spacing: Style.space(8)
-
-          Button {
-            width: parent.width
-            leftAlign: true
-            iconText: root.addingTimer ? "" : "󰐕"
-            text: root.addingTimer ? "Cancel" : "Add timer"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            bordered: true
-            onClicked: root.addingTimer ? root.cancelAddTimer() : root.openAddTimer()
-          }
-
-          Column {
-            width: parent.width
-            visible: root.addingTimer
-            spacing: Style.space(8)
-
-            Text {
-              visible: root.allProjects.length === 0
-              textFormat: Text.PlainText
-              text: "No projects yet -- create one in the notch TUI first."
-              color: Qt.darker(root.bar.foreground, 1.4)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
-              width: parent.width
-            }
-
-            // Field order matches notch's own TUI new-timer form: task,
-            // then client, then project, then notes.
-            TextField {
-              visible: root.allProjects.length > 0
-              width: parent.width
-              placeholderText: "What are you working on?"
-              text: root.newTimerTask
-              foreground: root.bar.foreground
-              font.family: root.bar.fontFamily
-              onTextChanged: root.newTimerTask = text
-              onAccepted: root.submitAddTimer()
-            }
-
-            Dropdown {
-              visible: root.allProjects.length > 0 && root.allClients.length > 0
-              width: parent.width
-              showLabel: false
-              value: root.newTimerClientId
-              options: root.allClients.map(function(c) {
-                return { value: String(c.id), label: c.name }
-              })
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              onChanged: function(v) { root.selectNewTimerClient(v) }
-            }
-
-            Dropdown {
-              visible: root.allProjects.length > 0
-              width: parent.width
-              showLabel: false
-              value: root.newTimerProjectId
-              options: root.newTimerProjectsForClient.map(function(p) {
-                return { value: String(p.id), label: p.name }
-              })
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              onChanged: function(v) { root.newTimerProjectId = v }
-            }
-
-            TextField {
-              visible: root.allProjects.length > 0
-              width: parent.width
-              placeholderText: "Notes (optional)"
-              text: root.newTimerNotes
-              foreground: root.bar.foreground
-              font.family: root.bar.fontFamily
-              onTextChanged: root.newTimerNotes = text
-              onAccepted: root.submitAddTimer()
-            }
-
-            Button {
-              visible: root.allProjects.length > 0
-              width: parent.width
-              leftAlign: true
-              text: "Start"
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              bordered: true
-              onClicked: root.submitAddTimer()
             }
           }
         }
