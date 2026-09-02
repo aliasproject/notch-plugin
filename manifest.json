@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.aliasproject.notch",
+  "name": "Notch",
+  "version": "1.0.0",
+  "author": "Michael Aguiar",
+  "license": "MIT",
+  "description": "Live time-tracking status in the bar, with quick start/stop and a link to the full notch TUI.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Notch",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
