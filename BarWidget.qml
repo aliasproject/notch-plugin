@@ -116,19 +116,45 @@ Panel {
   implicitHeight: button.implicitHeight
 
   // WidgetButton, not BarIconButton: BarIconButton is a fixed icon-slot
-  // square (an OpticalGlyph painted into a small fixed canvas, no eliding)
-  // meant for single glyphs, so a running timer's "⏱ Build feature ·
-  // 1:23:45" painted straight past its bounds into the neighboring widgets.
-  // WidgetButton has no fixed width by default -- it measures its label and
-  // grows to fit, same as shell/plugins/panels/clock/Panel.qml's live
-  // date/time text.
+  // square meant for single glyphs, so a running timer's "⏱ Build feature ·
+  // 1:23:45" doesn't fit it. Idle and running are genuinely different
+  // shapes, so the button switches modes between them, same as
+  // shell/plugins/panels/clock/Panel.qml switches its own WidgetButton
+  // between a fixed vertical icon column and a free-width horizontal label:
+  //   - idle: fixedWidth pinned to Style.bar.iconSlot (matching every
+  //     sibling BarIconButton's slot exactly) and an OpticalGlyph -- the
+  //     same optically-corrected glyph rendering BarIconButton itself uses
+  //     internally -- so the idle "⏱" is pixel-identical in size and
+  //     centering to the other bar icons.
+  //   - running: label text, auto-width (WidgetButton's default), so
+  //     arbitrary-length task text grows the slot instead of overflowing it.
+  // WidgetButton's own label/height already center on both axes against
+  // the full bar height, matching every other widget.
   WidgetButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.running ? root.statusText : "⏱"
+    fixedWidth: root.running ? -1 : Style.bar.iconSlot
+    labelVisible: root.running
+    hasVisualContent: root.running ? text !== "" : true
+    text: root.running ? root.statusText : ""
     tooltipText: root.statusTooltip
     onPressed: root.toggle()
+
+    Item {
+      visible: !root.running
+      anchors.centerIn: parent
+      width: Style.bar.iconCanvas
+      height: Style.bar.iconCanvas
+
+      OpticalGlyph {
+        anchors.fill: parent
+        text: "⏱"
+        fontFamily: button.fontFamily
+        fontSize: Style.bar.iconFont
+        color: button.foreground
+      }
+    }
   }
 
   KeyboardPanel {
