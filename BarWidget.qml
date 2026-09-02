@@ -150,36 +150,43 @@ Panel {
   implicitHeight: button.implicitHeight
 
   // WidgetButton, not BarIconButton: BarIconButton is a fixed icon-slot
-  // square meant for single glyphs, so a running timer's "󱎫 Build feature ·
-  // 1:23:45" doesn't fit it. Idle and running are genuinely different
-  // shapes, so the button switches modes between them, same as
-  // shell/plugins/panels/clock/Panel.qml switches its own WidgetButton
-  // between a fixed vertical icon column and a free-width horizontal label:
+  // square meant for single glyphs, and a running timer's live digits need
+  // to grow the slot instead of overflowing it. Idle and running are
+  // genuinely different shapes, so the button switches modes between them,
+  // same as shell/plugins/panels/clock/Panel.qml switches its own
+  // WidgetButton between a fixed vertical icon column and a free-width
+  // horizontal label -- except neither mode here uses WidgetButton's own
+  // built-in label at all (labelVisible stays false always): both render
+  // their own OpticalGlyph/Text children instead, so the running state can
+  // give its icon its own MouseArea (see below) without fighting
+  // WidgetButton's single whole-button click region.
   //   - idle: fixedWidth pinned to Style.bar.iconSlot (matching every
   //     sibling BarIconButton's slot exactly) and an OpticalGlyph -- the
   //     same optically-corrected glyph rendering BarIconButton itself uses
   //     internally -- so the idle icon is pixel-identical in size and
-  //     centering to the other bar icons. The glyph itself is the Nerd
-  //     Font "md-timer" PUA codepoint (U+F13AB), not the plain Unicode "⏱"
-  //     stopwatch character -- that one renders noticeably smaller than
-  //     every sibling's purpose-built icon glyph even at the same
-  //     Style.bar.iconFont size, since it isn't part of the icon glyph set
-  //     the rest of the bar draws from.
-  //   - running: label text, auto-width (WidgetButton's default), so
-  //     arbitrary-length task text grows the slot instead of overflowing it.
-  //     Ticks every second locally (see elapsedSeconds) rather than only
-  //     on notch's own poll cadence.
-  // WidgetButton's own label/height already center on both axes against
-  // the full bar height, matching every other widget.
+  //     centering to the other bar icons.
+  //   - running: icon + live time only (no task name -- deliberately kept
+  //     minimal; the task is one click away in the popout), auto-width
+  //     sized from the row's own implicit width since nothing here comes
+  //     from WidgetButton's label metrics anymore.
+  // The glyph is the Nerd Font "md-timer" PUA codepoint (U+F13AB), not the
+  // plain Unicode "⏱" stopwatch character -- that one renders noticeably
+  // smaller than every sibling's purpose-built icon glyph even at the same
+  // Style.bar.iconFont size, since it isn't part of the icon glyph set the
+  // rest of the bar draws from.
   WidgetButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    fixedWidth: root.running ? -1 : Style.bar.iconSlot
-    labelVisible: root.running
-    hasVisualContent: root.running ? text !== "" : true
-    text: root.running ? ("󱎫 " + root.statusTask + " · " + root.heroTimeText) : ""
+    fixedWidth: root.running ? (runningRow.implicitWidth + Style.space(17)) : Style.bar.iconSlot
+    labelVisible: false
+    hasVisualContent: true
     tooltipText: root.statusTooltip
+    // Whole-button fallback: catches the cross-widget popout-switch path
+    // (KeyboardPanel's dismissArea calls triggerPress() directly on the
+    // registered click target, bypassing normal hit-testing entirely) and
+    // any click on the running row that isn't over the icon's own
+    // MouseArea below -- i.e. the time digits, or idle mode entirely.
     onPressed: root.toggle()
 
     Item {
@@ -194,6 +201,51 @@ Panel {
         fontFamily: button.fontFamily
         fontSize: Style.bar.iconFont
         color: button.foreground
+      }
+    }
+
+    Row {
+      id: runningRow
+      visible: root.running
+      anchors.centerIn: parent
+      spacing: Style.space(6)
+
+      // Icon zone: its own MouseArea, layered on top of (and consuming
+      // clicks before) WidgetButton's own full-area mouseArea underneath --
+      // standard QtQuick overlay hit-testing, no special wiring needed.
+      // notch has no true pause/resume, only start/stop, so this stops the
+      // running entry outright (same action the popout's active row does),
+      // not a resumable pause.
+      Item {
+        width: Style.bar.iconCanvas
+        height: Style.bar.iconCanvas
+        anchors.verticalCenter: parent.verticalCenter
+
+        OpticalGlyph {
+          anchors.fill: parent
+          text: "󱎫"
+          fontFamily: button.fontFamily
+          fontSize: Style.bar.iconFont
+          color: button.foreground
+        }
+
+        MouseArea {
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.stopTimer()
+        }
+      }
+
+      // Time zone: no MouseArea of its own -- falls through to
+      // WidgetButton's onPressed above, which opens the popout.
+      Text {
+        textFormat: Text.PlainText
+        text: root.heroTimeText
+        color: button.foreground
+        font.family: button.fontFamily
+        font.pixelSize: Style.bar.iconFont
+        anchors.verticalCenter: parent.verticalCenter
       }
     }
   }
