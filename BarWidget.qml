@@ -159,6 +159,18 @@ Panel {
     newTimerClientText = ""
     newTimerProjectText = ""
     newTimerNotes = ""
+    // Fields' own `text` is set imperatively here and nowhere else
+    // declaratively (see the field instantiations below for why: a plain
+    // `text: root.newTimerXxx` binding gets silently severed the moment
+    // the field's own onTextChanged assigns to it, which is every
+    // keystroke -- after that, an external write to root.newTimerXxx,
+    // like the project field's own "picking a project also fills in its
+    // client" cross-write, would update state used at submit time without
+    // the visible field ever showing it).
+    addTimerTaskField.text = ""
+    addTimerClientField.text = ""
+    addTimerProjectField.text = ""
+    addTimerNotesField.text = ""
     // Same Qt.callLater-after-becoming-visible idiom qs.Ui's own
     // SearchableDropdown uses to focus its search field on open -- the
     // field exists and is visible immediately (addingTimer just toggles
@@ -635,11 +647,18 @@ Panel {
               // is pressed with no suggestion highlighted -- with one
               // highlighted, Enter selects it instead (see NameField's own
               // Keys.onPressed).
+              // None of these four fields declares `text: root.newTimerXxx`
+              // -- see openAddTimer()'s own comment for why a persistent
+              // binding there is a trap (silently severed by the field's
+              // own onTextChanged on the very first keystroke). Each
+              // field's text is set imperatively (reset in openAddTimer(),
+              // or here when a selection needs to push a value into a
+              // *different* field) and read back via onTextChanged/
+              // onTextEdited/onOptionSelected only.
               TextField {
                 id: addTimerTaskField
                 width: parent.width
                 placeholderText: "What are you working on?"
-                text: root.newTimerTask
                 foreground: root.bar.foreground
                 font.family: root.bar.fontFamily
                 onTextChanged: root.newTimerTask = text
@@ -650,7 +669,6 @@ Panel {
                 id: addTimerClientField
                 width: parent.width
                 placeholderText: "Client name (or leave blank)"
-                text: root.newTimerClientText
                 options: root.allClients
                 foreground: root.bar.foreground
                 fontFamily: root.bar.fontFamily
@@ -663,7 +681,6 @@ Panel {
                 id: addTimerProjectField
                 width: parent.width
                 placeholderText: "Project name (or leave blank)"
-                text: root.newTimerProjectText
                 options: root.newTimerProjectOptions
                 foreground: root.bar.foreground
                 fontFamily: root.bar.fontFamily
@@ -673,8 +690,16 @@ Panel {
                   // Picking an existing project pins down its client too --
                   // matches the TUI's own project-select behavior (see
                   // timers.go: selecting a project match also fills the
-                  // client field).
-                  if (opt.clientName) root.newTimerClientText = opt.clientName
+                  // client field). Pushed into the client field directly
+                  // (not just root.newTimerClientText) so what's on screen
+                  // and what actually submits can't diverge -- that
+                  // divergence, via the now-removed persistent binding
+                  // above, was the real bug an earlier version of this
+                  // form had.
+                  if (opt.clientName) {
+                    root.newTimerClientText = opt.clientName
+                    addTimerClientField.text = opt.clientName
+                  }
                 }
                 onAdvanceRequested: addTimerNotesField.forceActiveFocus()
               }
@@ -683,7 +708,6 @@ Panel {
                 id: addTimerNotesField
                 width: parent.width
                 placeholderText: "Notes (optional)"
-                text: root.newTimerNotes
                 foreground: root.bar.foreground
                 font.family: root.bar.fontFamily
                 onTextChanged: root.newTimerNotes = text
