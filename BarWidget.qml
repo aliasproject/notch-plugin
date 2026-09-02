@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "."
 import "Model.js" as Model
 
 // Bar-widget entry point for the notch plugin (see manifest.json). One
