@@ -115,7 +115,14 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  BarIconButton {
+  // WidgetButton, not BarIconButton: BarIconButton is a fixed icon-slot
+  // square (an OpticalGlyph painted into a small fixed canvas, no eliding)
+  // meant for single glyphs, so a running timer's "⏱ Build feature ·
+  // 1:23:45" painted straight past its bounds into the neighboring widgets.
+  // WidgetButton has no fixed width by default -- it measures its label and
+  // grows to fit, same as shell/plugins/panels/clock/Panel.qml's live
+  // date/time text.
+  WidgetButton {
     id: button
     anchors.fill: parent
     bar: root.bar
