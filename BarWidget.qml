@@ -376,16 +376,29 @@ Panel {
     id: launchProc
   }
 
-  // Correctness poll: catches state changes made elsewhere (the TUI,
-  // another client) that this widget wouldn't otherwise see. Ticking
-  // between polls is handled locally below, so this doesn't need to be
-  // fast.
+  // Correctness poll: catches state changes made elsewhere -- the TUI
+  // (starting/stopping/editing an entry there), another client, whatever
+  // -- that this widget wouldn't otherwise see. Refreshes tasks as well as
+  // status now, not just status: the recent-timers list previously only
+  // ever refreshed right after an action *this widget* took, so an edit
+  // made in the TUI while the popout sat open wouldn't show up in the
+  // list at all until it was closed and reopened. tasksRefreshPending
+  // (see actionProc for the full reasoning) keeps status and tasks
+  // sequenced correctly here too, not just after this widget's own
+  // actions -- reused as-is, no separate mechanism needed. Ticking between
+  // polls is handled locally below, so this doesn't need to be
+  // sub-second, but 2s (matching the poll rate notch's own README already
+  // suggests for waybar) reads as close enough to "immediate" without
+  // spawning a process every frame.
   Timer {
-    interval: 4000
+    interval: 2000
     running: true
     repeat: true
     triggeredOnStart: true
-    onTriggered: root.refreshStatus()
+    onTriggered: {
+      root.tasksRefreshPending = true
+      root.refreshStatus()
+    }
   }
 
   // Live per-second tick for the bar label, hero clock, and the active
