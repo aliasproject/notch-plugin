@@ -27,6 +27,7 @@ Panel {
   property string statusTooltip: "No timer running"
   property string statusClass: "idle"
   property string statusTask: ""
+  property string statusNotes: ""
   property string statusStartTime: ""
   property int statusProjectId: 0
   property string statusProjectName: ""
@@ -34,18 +35,26 @@ Panel {
   property var recentTasks: []
   property var allProjects: []
   property var allClients: []
-  property bool addingTimer: false
-  // Order matches notch's own TUI new-timer form: task, then client, then
-  // project, then notes (internal/ui/views/timers.go's fieldTask/
-  // fieldClient/fieldProject/fieldNotes). Client/project are free text,
-  // not an ID selection -- resolved-or-created server-side by "notch
-  // start --client-name/--project-name" (db.ResolveOrCreateProject),
-  // exactly like the TUI's own form always does regardless of whether you
-  // picked a suggestion or typed a new name.
-  property string newTimerTask: ""
-  property string newTimerClientText: ""
-  property string newTimerProjectText: ""
-  property string newTimerNotes: ""
+  // Klokki-style quick add: "+" inserts one editable row (styled like a
+  // real timer row) at the top of the list, cursor already in the task
+  // field -- type a name, Enter, done. No client/project decision up
+  // front; it starts on notch's own "Uncategorized/General" catch-all
+  // (db.EnsureUncategorizedProject, reached here via "notch start --task
+  // ..." with no --project/--client-name/--project-name at all). Assigning
+  // a real client/project happens after the fact, via editingTimer below.
+  property bool quickAdding: false
+
+  // Editing the *currently running* entry's client/project/task/notes --
+  // "notch edit" (defaults to the running entry when no --id is given).
+  // Pre-filled from the live status when opened. Same free-text-with-
+  // suggestions shape as the old up-front new-timer form used to be
+  // (NameField, resolve-existing-or-create server-side), just applied to
+  // an existing entry instead of a new one.
+  property bool editingTimer: false
+  property string editTaskText: ""
+  property string editClientText: ""
+  property string editProjectText: ""
+  property string editNotesText: ""
   property real nowMs: Date.now()
   // true right before a refresh that should re-sort to the server's true
   // recency order (a fresh open); false for a refresh triggered by a
@@ -114,22 +123,21 @@ Panel {
     return [pinnedEntry].concat(rest)
   }
 
-  // Project field's suggestion pool, narrowed to whichever client is
-  // currently typed IF it exactly (case-insensitively) matches an
-  // existing client -- "task, then client, then project" only works as a
-  // funnel if picking a real client actually shrinks the project list.
-  // A new (not-yet-existing) or blank client can't scope anything yet, so
-  // every project is offered instead of none.
-  readonly property var newTimerMatchedClient: {
-    var q = newTimerClientText.trim().toLowerCase()
+  // Edit form's project field suggestion pool, narrowed to whichever
+  // client is currently typed IF it exactly (case-insensitively) matches
+  // an existing client -- picking a real client actually shrinks the
+  // project list. A new (not-yet-existing) or blank client can't scope
+  // anything yet, so every project is offered instead of none.
+  readonly property var editMatchedClient: {
+    var q = editClientText.trim().toLowerCase()
     if (q === "") return null
     for (var i = 0; i < allClients.length; i++) {
       if (allClients[i].name.toLowerCase() === q) return allClients[i]
     }
     return null
   }
-  readonly property var newTimerProjectOptions: newTimerMatchedClient
-    ? allProjects.filter(function(p) { return p.clientId === newTimerMatchedClient.id })
+  readonly property var editProjectOptions: editMatchedClient
+    ? allProjects.filter(function(p) { return p.clientId === editMatchedClient.id })
     : allProjects
 
   function refreshStatus() {
@@ -158,8 +166,10 @@ Panel {
     actionProc.running = true
   }
 
-  // Used by the Add Timer form, which only has typed client/project names
-  // (possibly brand new ones) -- notch resolves-or-creates them server-side.
+  // Used by the recent-timers list' quick-add row, which never specifies a
+  // client/project -- notch resolves that to its own Uncategorized/General
+  // catch-all (db.EnsureUncategorizedProject) when none of --project/
+  // --client-name/--project-name are given at all.
   function startTaskByName(clientName, projectName, task, notes) {
     if (actionProc.running) return
     var cmd = ["notch", "start", "--task", task || ""]
@@ -170,49 +180,79 @@ Panel {
     actionProc.running = true
   }
 
-  // "Add a timer": the recent-tasks list only ever offers what's already
-  // been tracked before, so this is the only way to start a genuinely new
-  // task (or a brand new client/project) from the popout instead of
-  // falling back to the full TUI. Field order matches notch's own TUI
-  // new-timer form: task, then client, then project, then notes.
-  function openAddTimer() {
-    addingTimer = true
-    newTimerTask = ""
-    newTimerClientText = ""
-    newTimerProjectText = ""
-    newTimerNotes = ""
+  // Quick add: "+" on the recent-timers list opens one inline, editable
+  // row -- no client/project decision up front, just a task name and Enter.
+  function openQuickAdd() {
+    quickAdding = true
+    // Imperative, not `text: root.quickAddTaskText` on the field itself --
+    // see openEditTimer()'s own comment (same reasoning applies here: a
+    // persistent binding gets silently severed by the field's own
+    // onTextChanged the moment you type into it).
+    quickAddField.text = ""
+    Qt.callLater(function() { quickAddField.forceActiveFocus() })
+  }
+
+  function cancelQuickAdd() {
+    quickAdding = false
+  }
+
+  function submitQuickAdd() {
+    var task = quickAddField.text.trim()
+    if (task === "") return
+    startTaskByName("", "", task, "")
+    quickAdding = false
+  }
+
+  // Editing the *running* entry's client/project/task/notes -- "notch
+  // edit" defaults to the running entry when no --id is given. Pre-fills
+  // from the live status so e.g. re-submitting an unedited task/notes
+  // field is a no-op, not a silent clear.
+  function openEditTimer() {
+    if (!running) return
+    editingTimer = true
+    editTaskText = statusTask
+    editClientText = statusClientName
+    editProjectText = statusProjectName
+    editNotesText = statusNotes
     // Fields' own `text` is set imperatively here and nowhere else
-    // declaratively (see the field instantiations below for why: a plain
-    // `text: root.newTimerXxx` binding gets silently severed the moment
-    // the field's own onTextChanged assigns to it, which is every
-    // keystroke -- after that, an external write to root.newTimerXxx,
-    // like the project field's own "picking a project also fills in its
-    // client" cross-write, would update state used at submit time without
-    // the visible field ever showing it).
-    addTimerTaskField.text = ""
-    addTimerClientField.text = ""
-    addTimerProjectField.text = ""
-    addTimerNotesField.text = ""
+    // declaratively: a plain `text: root.editXxxText` binding on the field
+    // itself gets silently severed the moment its own onTextChanged
+    // assigns back to root.editXxxText, which happens on every keystroke
+    // -- after that, an external write (like this pre-fill, or the
+    // project field's own "picking a project also fills in its client"
+    // cross-write) would update state used at submit time without the
+    // visible field ever showing it. This bit an earlier version of the
+    // Add Timer form this replaced; see that bug's fix for the full story.
+    editTaskField.text = statusTask
+    editClientField.text = statusClientName
+    editProjectField.text = statusProjectName
+    editNotesField.text = statusNotes
     // Same Qt.callLater-after-becoming-visible idiom qs.Ui's own
-    // SearchableDropdown uses to focus its search field on open -- the
-    // field exists and is visible immediately (addingTimer just toggles
-    // an ordinary Column's `visible`, nothing is being created/loaded),
-    // but focus needs to land after this function returns and the
-    // visibility change has actually taken effect.
-    Qt.callLater(function() { addTimerTaskField.forceActiveFocus() })
+    // SearchableDropdown uses to focus its search field on open. Client,
+    // not Task: the task is usually already right (it's why you're
+    // editing is almost always to assign a client/project after a quick
+    // add), so that's the field actually worth landing in.
+    Qt.callLater(function() { editClientField.focusField() })
   }
 
-  function cancelAddTimer() {
-    addingTimer = false
+  function cancelEditTimer() {
+    editingTimer = false
   }
 
-  readonly property bool canSubmitAddTimer: newTimerTask.trim() !== ""
-    && (newTimerClientText.trim() !== "" || newTimerProjectText.trim() !== "")
-
-  function submitAddTimer() {
-    if (!canSubmitAddTimer) return
-    startTaskByName(newTimerClientText.trim(), newTimerProjectText.trim(), newTimerTask.trim(), newTimerNotes.trim())
-    addingTimer = false
+  function submitEditTimer() {
+    if (actionProc.running) return
+    var cmd = ["notch", "edit"]
+    var clientName = editClientText.trim()
+    var projectName = editProjectText.trim()
+    var task = editTaskText.trim()
+    var notes = editNotesText.trim()
+    if (clientName) cmd.push("--client-name", clientName)
+    if (projectName) cmd.push("--project-name", projectName)
+    if (task) cmd.push("--task", task)
+    if (notes) cmd.push("--notes", notes)
+    actionProc.command = cmd
+    actionProc.running = true
+    editingTimer = false
   }
 
   function stopTimer() {
@@ -237,7 +277,8 @@ Panel {
     refreshProjects()
     refreshClients()
   } else {
-    addingTimer = false
+    quickAdding = false
+    editingTimer = false
   }
 
   Process {
@@ -251,6 +292,7 @@ Panel {
         root.statusTooltip = parsed.tooltip
         root.statusClass = parsed.class
         root.statusTask = parsed.task
+        root.statusNotes = parsed.notes
         root.statusStartTime = parsed.startTime
         root.statusProjectId = parsed.projectId
         root.statusProjectName = parsed.projectName
@@ -505,11 +547,12 @@ Panel {
       // character doesn't insert it. This is exactly the case
       // PanelKeyCatcher's own doc comment calls out ("a panel with an
       // inline editor... must set blocked: editor.activeFocus so the
-      // editor receives keys normally") -- blocked for the whole time the
-      // Add Timer form is open, not just per-field, since a focused Start
-      // button needs Return/Space to reach its own Keys.onReturnPressed
-      // too, not just the text fields.
-      blocked: root.addingTimer
+      // editor receives keys normally") -- blocked for the whole time an
+      // inline editor (the quick-add row or the edit form) is open, not
+      // just per-field, since a focused Save/Start button needs
+      // Return/Space to reach its own Keys.onReturnPressed too, not just
+      // the text fields.
+      blocked: root.quickAdding || root.editingTimer
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
@@ -596,12 +639,142 @@ Panel {
           }
         }
 
+        // ---------- Edit trigger + form, for the running entry ----------
+        // A sibling row *after* the hero, never touching the hero Item
+        // itself -- the hero must never move (see its own PanelActionButton
+        // comment for why an earlier version of this file got that wrong).
+        // Only reachable while running: quick-add always starts on
+        // Uncategorized/General with no task-time to lose, so there's
+        // nothing to "edit" once idle -- reassigning a *finished* entry's
+        // client/project isn't wired up here (notch edit --id would need
+        // an entry picker of its own; out of scope for this round).
+        Item {
+          width: parent.width
+          height: editToggle.height
+          visible: root.running
+
+          PanelActionButton {
+            id: editToggle
+            anchors.right: parent.right
+            iconText: root.editingTimer ? "󰅖" : "󰏫"
+            fontFamily: root.bar.fontFamily
+            foreground: root.bar.foreground
+            tooltipText: root.editingTimer ? "Cancel" : "Edit client / project / notes"
+            bordered: true
+            onClicked: root.editingTimer ? root.cancelEditTimer() : root.openEditTimer()
+          }
+        }
+
+        // Same card framing as the old up-front Add Timer form this
+        // replaced (BorderSurface, subtle low-alpha wash -- see its own
+        // comment for why not a hover-fill token), just applied to editing
+        // instead of creating. Field order still task/client/project/notes
+        // for consistency with the TUI's own layout, even though task is
+        // usually already right coming out of quick-add.
+        BorderSurface {
+          width: parent.width
+          visible: root.editingTimer
+          radius: Style.cornerRadius
+          color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.06)
+          borderSpec: Border.controlSpec("normal", root.bar.foreground, Color.accent)
+          implicitHeight: editForm.implicitHeight + Style.space(20)
+
+          Column {
+            id: editForm
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Style.space(10)
+            spacing: Style.space(8)
+
+            // Escape cancels the form instead of closing the whole popout
+            // (PanelKeyCatcher's own Escape-closes-panel handling is
+            // blocked for as long as this is open -- see keyCatcher.blocked
+            // above). Standard QtQuick key bubbling: an unaccepted key
+            // event from whichever field has focus propagates up through
+            // its ancestors, so this doesn't need focus itself.
+            Keys.onPressed: function(event) {
+              if (event.key === Qt.Key_Escape) {
+                root.cancelEditTimer()
+                event.accepted = true
+              }
+            }
+
+            TextField {
+              id: editTaskField
+              width: parent.width
+              placeholderText: "Task"
+              foreground: root.bar.foreground
+              font.family: root.bar.fontFamily
+              onTextChanged: root.editTaskText = text
+              onAccepted: editClientField.focusField()
+            }
+
+            NameField {
+              id: editClientField
+              width: parent.width
+              placeholderText: "Client name (or leave blank)"
+              options: root.allClients
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onTextEdited: function(t) { root.editClientText = t }
+              onOptionSelected: function(opt) { root.editClientText = opt.name }
+              onAdvanceRequested: editProjectField.focusField()
+            }
+
+            NameField {
+              id: editProjectField
+              width: parent.width
+              placeholderText: "Project name (or leave blank)"
+              options: root.editProjectOptions
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              onTextEdited: function(t) { root.editProjectText = t }
+              onOptionSelected: function(opt) {
+                root.editProjectText = opt.name
+                // Picking an existing project pins down its client too --
+                // pushed into the client field directly (not just
+                // root.editClientText) so what's on screen and what
+                // actually submits can't diverge -- see openEditTimer()'s
+                // comment for why a plain declarative binding on these
+                // fields can't be trusted to do that on its own.
+                if (opt.clientName) {
+                  root.editClientText = opt.clientName
+                  editClientField.text = opt.clientName
+                }
+              }
+              onAdvanceRequested: editNotesField.forceActiveFocus()
+            }
+
+            TextField {
+              id: editNotesField
+              width: parent.width
+              placeholderText: "Notes (optional)"
+              foreground: root.bar.foreground
+              font.family: root.bar.fontFamily
+              onTextChanged: root.editNotesText = text
+              onAccepted: root.submitEditTimer()
+            }
+
+            Button {
+              width: parent.width
+              leftAlign: true
+              text: "Save"
+              focusable: true
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              bordered: true
+              onClicked: root.submitEditTimer()
+            }
+          }
+        }
+
         PanelSeparator {
           foreground: root.bar.foreground
         }
 
-        // ---------- Recent timers: header (+ Add Timer trigger), the
-        // expandable Add Timer form, then the list ----------
+        // ---------- Recent timers: header (+ quick-add trigger), the
+        // inline quick-add row, then the list ----------
         // No `visible: displayedTasks.length > 0` gate on this whole
         // section any more -- the header (and the "+" it now carries) has
         // to stay reachable even with zero recent timers, e.g. right after
@@ -614,7 +787,7 @@ Panel {
 
           Item {
             width: parent.width
-            height: Math.max(sectionHeader.implicitHeight, addTimerToggle.height)
+            height: Math.max(sectionHeader.implicitHeight, quickAddToggle.height)
 
             PanelSectionHeader {
               id: sectionHeader
@@ -625,151 +798,70 @@ Panel {
               fontFamily: root.bar.fontFamily
             }
 
-            // The recent-timers list only ever offers what's already been
-            // tracked before, so this is the only way to start a
-            // genuinely new task -- or a brand new client/project -- from
-            // the popout instead of falling back to the full TUI.
+            // Klokki-style quick add: one editable row, not a form --
+            // see quickAdding's own comment. Assigning a real
+            // client/project happens after the fact via the edit form
+            // near the hero, not up front here.
             PanelActionButton {
-              id: addTimerToggle
+              id: quickAddToggle
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              iconText: root.addingTimer ? "󰅖" : "󰐕"
+              iconText: root.quickAdding ? "󰅖" : "󰐕"
               fontFamily: root.bar.fontFamily
               foreground: root.bar.foreground
-              tooltipText: root.addingTimer ? "Cancel" : "Add timer"
+              tooltipText: root.quickAdding ? "Cancel" : "Add timer"
               bordered: true
-              onClicked: root.addingTimer ? root.cancelAddTimer() : root.openAddTimer()
+              onClicked: root.quickAdding ? root.cancelQuickAdd() : root.openQuickAdd()
             }
           }
 
-          // Framed as a distinct card (BorderSurface, the same primitive
-          // Button/Dropdown/PanelActionButton build on) so the form reads
-          // as one contained unit next to the list rather than a handful
-          // of fields blending into the rest of the popout. Field order
-          // (task, client, project, notes) and the resolve-existing-or-
-          // create behavior for client/project both match notch's own TUI
-          // new-timer form exactly (see db.ResolveOrCreateProject);
-          // NameField's inline suggestion list + "+ Create" hint is this
-          // popout's own take on the TUI's live-filtered client/project
-          // fields, not a literal copy of its layout.
-          BorderSurface {
+          // Styled like a real timer row below (icon + label slot at the
+          // same positions rowIcon/labels use) so it reads as "a new row
+          // that already exists, waiting for a name" rather than a
+          // separate form bolted on -- the whole point of quick add.
+          Item {
             width: parent.width
-            visible: root.addingTimer
-            radius: Style.cornerRadius
-            // Subtle low-alpha foreground wash, not a hover-state fill --
-            // same technique power/Panel.qml uses for its battery bar
-            // track (Qt.rgba(...foreground, 0.12)), so this reads as a
-            // static section background rather than looking permanently
-            // "hovered."
-            color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.06)
-            borderSpec: Border.controlSpec("normal", root.bar.foreground, Color.accent)
-            implicitHeight: addTimerForm.implicitHeight + Style.space(20)
+            visible: root.quickAdding
+            height: quickAddField.implicitHeight + Style.space(16)
 
-            Column {
-              id: addTimerForm
+            Rectangle {
+              anchors.fill: parent
+              radius: Style.cornerRadius
+              color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.06)
+            }
+
+            Item {
+              width: Style.bar.iconCanvas
+              height: Style.bar.iconCanvas
               anchors.left: parent.left
-              anchors.right: parent.right
-              anchors.top: parent.top
-              anchors.margins: Style.space(10)
-              spacing: Style.space(8)
+              anchors.leftMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
 
-              // Escape cancels the form instead of closing the whole
-              // popout (PanelKeyCatcher's own Escape-closes-panel handling
-              // is blocked for as long as the form is open -- see
-              // keyCatcher.blocked above). Standard QtQuick key bubbling:
-              // an unaccepted key event from whichever field has focus
-              // propagates up through its ancestors, so this doesn't need
-              // focus itself.
+              OpticalGlyph {
+                anchors.fill: parent
+                text: "󰐊"
+                fontFamily: root.bar.fontFamily
+                fontSize: Style.bar.iconFont
+                color: root.bar.foreground
+              }
+            }
+
+            TextField {
+              id: quickAddField
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(10) + Style.bar.iconCanvas + Style.space(10)
+              anchors.right: parent.right
+              anchors.rightMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+              placeholderText: "Task name…"
+              foreground: root.bar.foreground
+              font.family: root.bar.fontFamily
+              onAccepted: root.submitQuickAdd()
               Keys.onPressed: function(event) {
                 if (event.key === Qt.Key_Escape) {
-                  root.cancelAddTimer()
+                  root.cancelQuickAdd()
                   event.accepted = true
                 }
-              }
-
-              // Enter advances field-to-field (Task -> Client -> Project ->
-              // Notes -> submit), matching the TUI's own new-timer form
-              // flow. NameField's advanceRequested only fires when Enter
-              // is pressed with no suggestion highlighted -- with one
-              // highlighted, Enter selects it instead (see NameField's own
-              // Keys.onPressed).
-              // None of these four fields declares `text: root.newTimerXxx`
-              // -- see openAddTimer()'s own comment for why a persistent
-              // binding there is a trap (silently severed by the field's
-              // own onTextChanged on the very first keystroke). Each
-              // field's text is set imperatively (reset in openAddTimer(),
-              // or here when a selection needs to push a value into a
-              // *different* field) and read back via onTextChanged/
-              // onTextEdited/onOptionSelected only.
-              TextField {
-                id: addTimerTaskField
-                width: parent.width
-                placeholderText: "What are you working on?"
-                foreground: root.bar.foreground
-                font.family: root.bar.fontFamily
-                onTextChanged: root.newTimerTask = text
-                onAccepted: addTimerClientField.focusField()
-              }
-
-              NameField {
-                id: addTimerClientField
-                width: parent.width
-                placeholderText: "Client name (or leave blank)"
-                options: root.allClients
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-                onTextEdited: function(t) { root.newTimerClientText = t }
-                onOptionSelected: function(opt) { root.newTimerClientText = opt.name }
-                onAdvanceRequested: addTimerProjectField.focusField()
-              }
-
-              NameField {
-                id: addTimerProjectField
-                width: parent.width
-                placeholderText: "Project name (or leave blank)"
-                options: root.newTimerProjectOptions
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-                onTextEdited: function(t) { root.newTimerProjectText = t }
-                onOptionSelected: function(opt) {
-                  root.newTimerProjectText = opt.name
-                  // Picking an existing project pins down its client too --
-                  // matches the TUI's own project-select behavior (see
-                  // timers.go: selecting a project match also fills the
-                  // client field). Pushed into the client field directly
-                  // (not just root.newTimerClientText) so what's on screen
-                  // and what actually submits can't diverge -- that
-                  // divergence, via the now-removed persistent binding
-                  // above, was the real bug an earlier version of this
-                  // form had.
-                  if (opt.clientName) {
-                    root.newTimerClientText = opt.clientName
-                    addTimerClientField.text = opt.clientName
-                  }
-                }
-                onAdvanceRequested: addTimerNotesField.forceActiveFocus()
-              }
-
-              TextField {
-                id: addTimerNotesField
-                width: parent.width
-                placeholderText: "Notes (optional)"
-                foreground: root.bar.foreground
-                font.family: root.bar.fontFamily
-                onTextChanged: root.newTimerNotes = text
-                onAccepted: root.submitAddTimer()
-              }
-
-              Button {
-                width: parent.width
-                leftAlign: true
-                text: "Start"
-                enabled: root.canSubmitAddTimer
-                focusable: true
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-                bordered: true
-                onClicked: root.submitAddTimer()
               }
             }
           }
