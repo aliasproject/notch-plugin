@@ -592,37 +592,78 @@ Panel {
             onClicked: root.stopTimer()
           }
 
-          Column {
-            id: heroLabels
+          // Clickable to edit the running entry's client/project/notes --
+          // not a separate button, deliberately. An earlier version added
+          // a dedicated pencil-icon row below the hero, `visible:
+          // root.running`, which shifted RECENT TIMERS and everything
+          // after it down on *every* start (and back up on every stop),
+          // not just when you actually opened the edit form. This hero
+          // row, and heroLabels within it, exist unconditionally in both
+          // states -- only the glyph/text they show changes -- so hanging
+          // the click target and its hover highlight off heroLabels itself
+          // adds an interaction without adding anything that appears or
+          // disappears on its own.
+          Item {
+            id: heroLabelsArea
             anchors.left: heroIcon.right
             anchors.leftMargin: Style.space(14)
             anchors.right: heroTime.left
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(2)
+            implicitHeight: heroLabels.implicitHeight
 
-            Text {
-              textFormat: Text.PlainText
-              text: root.heroTaskText
-              color: root.bar.foreground
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
-              elide: Text.ElideRight
-              width: parent.width
+            Rectangle {
+              anchors.fill: parent
+              radius: Style.cornerRadius
+              visible: root.running
+              color: heroLabelsMouse.containsMouse
+                ? Style.hoverFillFor(root.bar.foreground, Color.accent) : "transparent"
+              Behavior on color { ColorAnimation { duration: 120 } }
             }
 
-            Text {
-              textFormat: Text.PlainText
-              visible: root.heroMetaText !== ""
-              text: root.heroMetaText.toUpperCase()
-              color: Qt.darker(root.bar.foreground, 1.4)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              font.letterSpacing: 1.2
-              elide: Text.ElideRight
-              width: parent.width
+            Column {
+              id: heroLabels
+              anchors.fill: parent
+              spacing: Style.space(2)
+
+              Text {
+                textFormat: Text.PlainText
+                text: root.heroTaskText
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.title
+                font.bold: true
+                elide: Text.ElideRight
+                width: parent.width
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                visible: root.heroMetaText !== ""
+                text: root.heroMetaText.toUpperCase()
+                color: Qt.darker(root.bar.foreground, 1.4)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1.2
+                elide: Text.ElideRight
+                width: parent.width
+              }
+            }
+
+            MouseArea {
+              id: heroLabelsMouse
+              anchors.fill: parent
+              enabled: root.running
+              hoverEnabled: true
+              cursorShape: root.running ? Qt.PointingHandCursor : Qt.ArrowCursor
+              onClicked: root.editingTimer ? root.cancelEditTimer() : root.openEditTimer()
+
+              PanelToolTip {
+                visible: root.running && !root.editingTimer && heroLabelsMouse.containsMouse
+                text: "Click to edit client / project / notes"
+                fontFamily: root.bar.fontFamily
+              }
             }
           }
 
@@ -639,32 +680,15 @@ Panel {
           }
         }
 
-        // ---------- Edit trigger + form, for the running entry ----------
-        // A sibling row *after* the hero, never touching the hero Item
-        // itself -- the hero must never move (see its own PanelActionButton
-        // comment for why an earlier version of this file got that wrong).
-        // Only reachable while running: quick-add always starts on
+        // ---------- Edit form, for the running entry ----------
+        // Triggered by clicking heroLabels itself (see its own comment) --
+        // no separate toggle row here to keep out of the layout. Only
+        // reachable while running: quick-add always starts on
         // Uncategorized/General with no task-time to lose, so there's
         // nothing to "edit" once idle -- reassigning a *finished* entry's
         // client/project isn't wired up here (notch edit --id would need
         // an entry picker of its own; out of scope for this round).
-        Item {
-          width: parent.width
-          height: editToggle.height
-          visible: root.running
-
-          PanelActionButton {
-            id: editToggle
-            anchors.right: parent.right
-            iconText: root.editingTimer ? "󰅖" : "󰏫"
-            fontFamily: root.bar.fontFamily
-            foreground: root.bar.foreground
-            tooltipText: root.editingTimer ? "Cancel" : "Edit client / project / notes"
-            bordered: true
-            onClicked: root.editingTimer ? root.cancelEditTimer() : root.openEditTimer()
-          }
-        }
-
+        //
         // Same card framing as the old up-front Add Timer form this
         // replaced (BorderSurface, subtle low-alpha wash -- see its own
         // comment for why not a hover-fill token), just applied to editing
