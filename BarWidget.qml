@@ -159,6 +159,13 @@ Panel {
     newTimerClientText = ""
     newTimerProjectText = ""
     newTimerNotes = ""
+    // Same Qt.callLater-after-becoming-visible idiom qs.Ui's own
+    // SearchableDropdown uses to focus its search field on open -- the
+    // field exists and is visible immediately (addingTimer just toggles
+    // an ordinary Column's `visible`, nothing is being created/loaded),
+    // but focus needs to land after this function returns and the
+    // visibility change has actually taken effect.
+    Qt.callLater(function() { addTimerTaskField.forceActiveFocus() })
   }
 
   function cancelAddTimer() {
@@ -441,98 +448,6 @@ Panel {
         anchors.top: parent.top
         spacing: Style.space(14)
 
-        // ---------- Add a timer: "+" trigger at the top, form expands
-        // right below it ----------
-        // The recent-timers list further down only ever offers what's
-        // already been tracked before, so this is the only way to start a
-        // genuinely new task -- or a brand new client/project -- from the
-        // popout instead of falling back to the full TUI. Field order
-        // (task, client, project, notes) and the resolve-existing-or-create
-        // behavior for client/project both match notch's own TUI new-timer
-        // form exactly (see db.ResolveOrCreateProject); NameField's
-        // suggestion list + "+ Create" hint is this popout's own take on
-        // the TUI's live-filtered client/project fields, not a literal
-        // copy of its floating-list layout.
-        Item {
-          width: parent.width
-          height: addTimerToggle.height
-
-          PanelActionButton {
-            id: addTimerToggle
-            anchors.right: parent.right
-            iconText: root.addingTimer ? "󰅖" : "󰐕"
-            fontFamily: root.bar.fontFamily
-            foreground: root.bar.foreground
-            tooltipText: root.addingTimer ? "Cancel" : "Add timer"
-            bordered: true
-            onClicked: root.addingTimer ? root.cancelAddTimer() : root.openAddTimer()
-          }
-        }
-
-        Column {
-          width: parent.width
-          visible: root.addingTimer
-          spacing: Style.space(8)
-
-          TextField {
-            width: parent.width
-            placeholderText: "What are you working on?"
-            text: root.newTimerTask
-            foreground: root.bar.foreground
-            font.family: root.bar.fontFamily
-            onTextChanged: root.newTimerTask = text
-          }
-
-          NameField {
-            width: parent.width
-            placeholderText: "Client name (or leave blank)"
-            text: root.newTimerClientText
-            options: root.allClients
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            onTextEdited: function(t) { root.newTimerClientText = t }
-            onOptionSelected: function(opt) { root.newTimerClientText = opt.name }
-          }
-
-          NameField {
-            width: parent.width
-            placeholderText: "Project name (or leave blank)"
-            text: root.newTimerProjectText
-            options: root.newTimerProjectOptions
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            onTextEdited: function(t) { root.newTimerProjectText = t }
-            onOptionSelected: function(opt) {
-              root.newTimerProjectText = opt.name
-              // Picking an existing project pins down its client too --
-              // matches the TUI's own project-select behavior (see
-              // timers.go: selecting a project match also fills the
-              // client field).
-              if (opt.clientName) root.newTimerClientText = opt.clientName
-            }
-          }
-
-          TextField {
-            width: parent.width
-            placeholderText: "Notes (optional)"
-            text: root.newTimerNotes
-            foreground: root.bar.foreground
-            font.family: root.bar.fontFamily
-            onTextChanged: root.newTimerNotes = text
-          }
-
-          Button {
-            width: parent.width
-            leftAlign: true
-            text: "Start"
-            enabled: root.canSubmitAddTimer
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            bordered: true
-            onClicked: root.submitAddTimer()
-          }
-        }
-
         // ---------- Hero: icon · task/client (labels) · live clock ----------
         // Same shape as shell/plugins/panels/power/Panel.qml's own
         // heroIcon/heroLabels/heroPercent row -- an icon on the left, a
@@ -613,16 +528,139 @@ Panel {
           foreground: root.bar.foreground
         }
 
-        // ---------- Recent timers: flat list, running one highlighted ----------
+        // ---------- Recent timers: header (+ Add Timer trigger), the
+        // expandable Add Timer form, then the list ----------
+        // No `visible: displayedTasks.length > 0` gate on this whole
+        // section any more -- the header (and the "+" it now carries) has
+        // to stay reachable even with zero recent timers, e.g. right after
+        // a fresh install, or there'd be no way to add the very first one.
+        // The Repeater below still naturally collapses to nothing on an
+        // empty model without an explicit visible binding.
         Column {
           width: parent.width
           spacing: Style.space(8)
-          visible: root.displayedTasks.length > 0
 
-          PanelSectionHeader {
-            text: "RECENT TIMERS"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+          Item {
+            width: parent.width
+            height: Math.max(sectionHeader.implicitHeight, addTimerToggle.height)
+
+            PanelSectionHeader {
+              id: sectionHeader
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "RECENT TIMERS"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+            }
+
+            // The recent-timers list only ever offers what's already been
+            // tracked before, so this is the only way to start a
+            // genuinely new task -- or a brand new client/project -- from
+            // the popout instead of falling back to the full TUI.
+            PanelActionButton {
+              id: addTimerToggle
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: root.addingTimer ? "󰅖" : "󰐕"
+              fontFamily: root.bar.fontFamily
+              foreground: root.bar.foreground
+              tooltipText: root.addingTimer ? "Cancel" : "Add timer"
+              bordered: true
+              onClicked: root.addingTimer ? root.cancelAddTimer() : root.openAddTimer()
+            }
+          }
+
+          // Framed as a distinct card (BorderSurface, the same primitive
+          // Button/Dropdown/PanelActionButton build on) so the form reads
+          // as one contained unit next to the list rather than a handful
+          // of fields blending into the rest of the popout. Field order
+          // (task, client, project, notes) and the resolve-existing-or-
+          // create behavior for client/project both match notch's own TUI
+          // new-timer form exactly (see db.ResolveOrCreateProject);
+          // NameField's inline suggestion list + "+ Create" hint is this
+          // popout's own take on the TUI's live-filtered client/project
+          // fields, not a literal copy of its layout.
+          BorderSurface {
+            width: parent.width
+            visible: root.addingTimer
+            radius: Style.cornerRadius
+            // Subtle low-alpha foreground wash, not a hover-state fill --
+            // same technique power/Panel.qml uses for its battery bar
+            // track (Qt.rgba(...foreground, 0.12)), so this reads as a
+            // static section background rather than looking permanently
+            // "hovered."
+            color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.06)
+            borderSpec: Border.controlSpec("normal", root.bar.foreground, Color.accent)
+            implicitHeight: addTimerForm.implicitHeight + Style.space(20)
+
+            Column {
+              id: addTimerForm
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(10)
+              spacing: Style.space(8)
+
+              TextField {
+                id: addTimerTaskField
+                width: parent.width
+                placeholderText: "What are you working on?"
+                text: root.newTimerTask
+                foreground: root.bar.foreground
+                font.family: root.bar.fontFamily
+                onTextChanged: root.newTimerTask = text
+              }
+
+              NameField {
+                width: parent.width
+                placeholderText: "Client name (or leave blank)"
+                text: root.newTimerClientText
+                options: root.allClients
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                onTextEdited: function(t) { root.newTimerClientText = t }
+                onOptionSelected: function(opt) { root.newTimerClientText = opt.name }
+              }
+
+              NameField {
+                width: parent.width
+                placeholderText: "Project name (or leave blank)"
+                text: root.newTimerProjectText
+                options: root.newTimerProjectOptions
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                onTextEdited: function(t) { root.newTimerProjectText = t }
+                onOptionSelected: function(opt) {
+                  root.newTimerProjectText = opt.name
+                  // Picking an existing project pins down its client too --
+                  // matches the TUI's own project-select behavior (see
+                  // timers.go: selecting a project match also fills the
+                  // client field).
+                  if (opt.clientName) root.newTimerClientText = opt.clientName
+                }
+              }
+
+              TextField {
+                width: parent.width
+                placeholderText: "Notes (optional)"
+                text: root.newTimerNotes
+                foreground: root.bar.foreground
+                font.family: root.bar.fontFamily
+                onTextChanged: root.newTimerNotes = text
+                onAccepted: root.submitAddTimer()
+              }
+
+              Button {
+                width: parent.width
+                leftAlign: true
+                text: "Start"
+                enabled: root.canSubmitAddTimer
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                bordered: true
+                onClicked: root.submitAddTimer()
+              }
+            }
           }
 
           // Not Button here: Button is single-line, and a combined label
