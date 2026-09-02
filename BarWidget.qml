@@ -399,6 +399,7 @@ Panel {
   // it rather than leaving the fast path dead for the rest of the session.
   Process {
     id: dbWatchProc
+    running: true
     command: ["setpriv", "--pdeathsig", "TERM", "notch", "watch"]
     onExited: dbWatchRestartTimer.restart()
     stdout: SplitParser {
