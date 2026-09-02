@@ -457,16 +457,29 @@ Panel {
                 Behavior on color { ColorAnimation { duration: 120 } }
               }
 
-              Text {
+              // Fixed-size box, not a plain Text sized to its own glyph:
+              // "▶"/"⚡" (still-different-width, same issue the bar icon
+              // already hit) shifted `labels` sideways every time a row's
+              // active state flipped, since labels anchors to rowIcon.right.
+              // Nerd Font md-play/md-stop (matching the bar icon's own
+              // md-timer/md-stop) rendered via OpticalGlyph inside a fixed
+              // canvas, same as the bar icon, so this can't recur regardless
+              // of which two glyphs are swapped in.
+              Item {
                 id: rowIcon
-                textFormat: Text.PlainText
-                text: row.isActive ? "⚡" : "▶"
-                color: root.bar.foreground
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.icon
+                width: Style.bar.iconCanvas
+                height: Style.bar.iconCanvas
                 anchors.left: parent.left
                 anchors.leftMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
+
+                OpticalGlyph {
+                  anchors.fill: parent
+                  text: row.isActive ? "󰓛" : "󰐊"
+                  fontFamily: root.bar.fontFamily
+                  fontSize: Style.bar.iconFont
+                  color: root.bar.foreground
+                }
               }
 
               Text {
