@@ -15,6 +15,9 @@ import "Model.js" as Model
 // notch itself has no daemon: every action here is a one-shot CLI call
 // ("notch status/projects/start/stop -json") that opens the sqlite db,
 // does one thing, and exits — see notch's README "Scripting" section.
+// The popout's hero clock and each project row's running time tick
+// locally between polls (from the "startTime" the status JSON reports),
+// rather than re-spawning notch every second, for a smooth live readout.
 Panel {
   id: root
   moduleName: "io.github.aliasproject.notch"
@@ -23,15 +26,23 @@ Panel {
   property string statusText: ""
   property string statusTooltip: "No timer running"
   property string statusClass: "idle"
+  property string statusTask: ""
+  property string statusStartTime: ""
+  property int statusProjectId: 0
+  property string statusProjectName: ""
+  property string statusClientName: ""
   property var projects: []
-  readonly property bool running: statusClass === "running"
+  property real nowMs: Date.now()
 
-  // statusTooltip is "<client> › <project>\n<task>" while running (see
-  // notch's internal/status.FormatJSON) -- split it for the popout hero
-  // instead of re-deriving the same thing from a second CLI call.
-  readonly property var tooltipLines: statusTooltip.split("\n")
-  readonly property string heroTitle: running ? (tooltipLines[1] || "Running") : "No timer running"
-  readonly property string heroMeta: running ? (tooltipLines[0] || "") : "Idle"
+  readonly property bool running: statusClass === "running"
+  readonly property real startTimeMs: statusStartTime !== "" ? Date.parse(statusStartTime) : 0
+  readonly property int elapsedSeconds: running && startTimeMs > 0
+    ? Math.max(0, Math.floor((nowMs - startTimeMs) / 1000))
+    : 0
+
+  readonly property string heroTimeText: Model.formatSeconds(elapsedSeconds)
+  readonly property string heroTaskText: running ? statusTask : "No timer running"
+  readonly property string heroMetaText: running ? (statusClientName + " › " + statusProjectName) : ""
 
   function refreshStatus() {
     if (!statusProc.running) statusProc.running = true
@@ -74,6 +85,12 @@ Panel {
         root.statusText = parsed.text
         root.statusTooltip = parsed.tooltip
         root.statusClass = parsed.class
+        root.statusTask = parsed.task
+        root.statusStartTime = parsed.startTime
+        root.statusProjectId = parsed.projectId
+        root.statusProjectName = parsed.projectName
+        root.statusClientName = parsed.clientName
+        root.nowMs = Date.now()
       }
     }
   }
@@ -88,24 +105,41 @@ Panel {
   }
 
   // Fire-and-forget: start/stop don't print anything worth reading, so
-  // just re-poll status once the process exits (whether it succeeded or
-  // not -- a failed start/stop should still show the real current state,
-  // not a stale optimistic one).
+  // just re-poll status + totals once the process exits (whether it
+  // succeeded or not -- a failed start/stop should still show the real
+  // current state, not a stale optimistic one).
   Process {
     id: actionProc
-    onExited: root.refreshStatus()
+    onExited: {
+      root.refreshStatus()
+      root.refreshProjects()
+    }
   }
 
   Process {
     id: launchProc
   }
 
+  // Correctness poll: catches state changes made elsewhere (the TUI,
+  // another client) that this widget wouldn't otherwise see. Ticking
+  // between polls is handled locally below, so this doesn't need to be
+  // fast.
   Timer {
-    interval: 2000
+    interval: 4000
     running: true
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refreshStatus()
+  }
+
+  // Live per-second tick for the bar label, hero clock, and the active
+  // project row's running total -- only while a timer is actually
+  // running, same as clock/Panel.qml's own always-on 1s timer.
+  Timer {
+    interval: 1000
+    running: root.running
+    repeat: true
+    onTriggered: root.nowMs = Date.now()
   }
 
   // root is a plain Item (Panel.qml's base) with no implicit size of its
@@ -128,6 +162,8 @@ Panel {
   //     centering to the other bar icons.
   //   - running: label text, auto-width (WidgetButton's default), so
   //     arbitrary-length task text grows the slot instead of overflowing it.
+  //     Ticks every second locally (see elapsedSeconds) rather than only
+  //     on notch's own poll cadence.
   // WidgetButton's own label/height already center on both axes against
   // the full bar height, matching every other widget.
   WidgetButton {
@@ -137,7 +173,7 @@ Panel {
     fixedWidth: root.running ? -1 : Style.bar.iconSlot
     labelVisible: root.running
     hasVisualContent: root.running ? text !== "" : true
-    text: root.running ? root.statusText : ""
+    text: root.running ? ("⏱ " + root.statusTask + " · " + root.heroTimeText) : ""
     tooltipText: root.statusTooltip
     onPressed: root.toggle()
 
@@ -164,7 +200,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(300))
+    contentWidth: panel.fittedContentWidth(Style.space(320))
     contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
     PanelKeyCatcher {
@@ -180,77 +216,135 @@ Panel {
         anchors.top: parent.top
         spacing: Style.space(14)
 
-        PanelHero {
+        // ---------- Hero: icon · task/client (labels) · live clock ----------
+        // Same shape as shell/plugins/panels/power/Panel.qml's own
+        // heroIcon/heroLabels/heroPercent row -- an icon on the left, a
+        // two-line label stack in the middle, and the single dominant
+        // number on the right in Style.font.displayLarge.
+        Item {
           width: parent.width
-          iconComponent: Component {
+          implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, heroTime.implicitHeight)
+
+          Text {
+            id: heroIcon
+            textFormat: Text.PlainText
+            text: "⏱"
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.display
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
+          Column {
+            id: heroLabels
+            anchors.left: heroIcon.right
+            anchors.leftMargin: Style.space(14)
+            anchors.right: heroTime.left
+            anchors.rightMargin: Style.space(10)
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(2)
+
             Text {
               textFormat: Text.PlainText
-              text: "⏱"
+              text: root.heroTaskText
               color: root.bar.foreground
               font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.display
+              font.pixelSize: Style.font.title
+              font.bold: true
+              elide: Text.ElideRight
+              width: parent.width
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              visible: root.heroMetaText !== ""
+              text: root.heroMetaText.toUpperCase()
+              color: Qt.darker(root.bar.foreground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.2
+              elide: Text.ElideRight
+              width: parent.width
             }
           }
-          title: root.heroTitle
-          meta: root.heroMeta
-          foreground: root.bar.foreground
-          fontFamily: root.bar.fontFamily
+
+          Text {
+            id: heroTime
+            textFormat: Text.PlainText
+            text: root.heroTimeText
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.displayLarge
+            font.bold: true
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+          }
         }
 
         PanelSeparator {
           foreground: root.bar.foreground
         }
 
+        // ---------- Timers: flat list, running one highlighted ----------
         Column {
           width: parent.width
           spacing: Style.space(8)
           visible: root.projects.length > 0
 
           PanelSectionHeader {
-            text: "PROJECTS"
+            text: "TIMERS"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
           }
 
           Repeater {
             model: root.projects
-            Button {
+            Item {
+              id: row
               required property var modelData
+              readonly property bool isActive: root.running && modelData.id === root.statusProjectId
+              readonly property int displaySeconds: (modelData.totalSeconds || 0) + (isActive ? root.elapsedSeconds : 0)
+
               width: parent.width
-              leftAlign: true
-              text: (modelData.clientName ? modelData.clientName + " › " : "") + modelData.name
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              bordered: true
-              onClicked: root.startProject(modelData.id)
+              height: rowButton.implicitHeight
+
+              Button {
+                id: rowButton
+                anchors.fill: parent
+                leftAlign: true
+                iconText: row.isActive ? "⚡" : "▶"
+                text: (modelData.clientName ? modelData.clientName + " › " : "") + modelData.name
+                active: row.isActive
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                bordered: true
+                onClicked: row.isActive ? root.stopTimer() : root.startProject(modelData.id)
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                text: Model.formatSeconds(row.displaySeconds)
+                color: row.isActive ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.4)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(12)
+                anchors.verticalCenter: parent.verticalCenter
+              }
             }
           }
         }
 
-        Column {
+        Button {
           width: parent.width
-          spacing: Style.space(8)
-
-          Button {
-            width: parent.width
-            visible: root.running
-            leftAlign: true
-            text: "Stop timer"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            bordered: true
-            onClicked: root.stopTimer()
-          }
-
-          Button {
-            width: parent.width
-            leftAlign: true
-            text: "Open notch"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            bordered: true
-            onClicked: root.openTui()
-          }
+          leftAlign: true
+          text: "Open notch"
+          foreground: root.bar.foreground
+          fontFamily: root.bar.fontFamily
+          bordered: true
+          onClicked: root.openTui()
         }
       }
     }
