@@ -52,6 +52,11 @@ Panel {
   // start/stop action while already open, which should keep the on-screen
   // row order fixed instead -- see Model.reorderTasksInPlace.
   property bool tasksNeedFreshSort: true
+  // Set right before an action-triggered refreshStatus(); consumed once
+  // that status refresh actually lands, which is what then fires
+  // refreshTasks() -- see statusProc and actionProc below for why this
+  // can't just be two independent calls.
+  property bool tasksRefreshPending: false
 
   readonly property bool running: statusClass === "running"
   readonly property real startTimeMs: statusStartTime !== "" ? Date.parse(statusStartTime) : 0
@@ -233,6 +238,13 @@ Panel {
         root.statusProjectName = parsed.projectName
         root.statusClientName = parsed.clientName
         root.nowMs = Date.now()
+        // Only after status has actually landed -- see
+        // tasksRefreshPending's own comment for why this can't just be a
+        // second independent call sitting next to refreshStatus().
+        if (root.tasksRefreshPending) {
+          root.tasksRefreshPending = false
+          root.refreshTasks()
+        }
       }
     }
   }
@@ -276,11 +288,26 @@ Panel {
   // current state, not a stale optimistic one). tasksNeedFreshSort is left
   // false here, so this refresh updates each row's data in place without
   // re-sorting/shifting the list -- see Model.reorderTasksInPlace.
+  //
+  // refreshTasks() is deliberately NOT called directly here alongside
+  // refreshStatus() -- they'd be two independent Processes racing each
+  // other, and displayedTasks reads both root.running (from status) and
+  // root.recentTasks (from tasks) together. If tasks happened to land
+  // first after a stop, root.running would still read true for a moment
+  // while recentTasks already reflected the finished entry -- fine. But
+  // if status landed first (just as plausible), running flips to false
+  // while recentTasks is still the pre-stop list, which never contained a
+  // brand-new task at all (it only ever appeared via displayedTasks'
+  // synthesized "pin the active one" entry, never in recentTasks itself)
+  // -- so the row would vanish until the next refresh caught up, which
+  // this Process's onExited never itself waits for or re-renders from.
+  // tasksRefreshPending makes refreshTasks() fire only once status has
+  // actually landed, so displayedTasks always reads a consistent pair.
   Process {
     id: actionProc
     onExited: {
+      root.tasksRefreshPending = true
       root.refreshStatus()
-      root.refreshTasks()
     }
   }
 
