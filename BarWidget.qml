@@ -376,36 +376,49 @@ Panel {
     id: launchProc
   }
 
-  // Same path notch's own resolveDBPath() resolves: $NOTCH_DB if set,
-  // else ~/.local/share/notch/notch.db.
-  readonly property string dbPath: {
-    var envDb = Quickshell.env("NOTCH_DB")
-    if (envDb) return envDb
-    return Quickshell.env("HOME") + "/.local/share/notch/notch.db"
-  }
-
   // Fast path for picking up a change made elsewhere -- the TUI, another
   // "notch" invocation, whatever -- instead of waiting on the slow poll
-  // fallback below. Watches "<dbPath>-wal", not dbPath itself: notch opens
-  // sqlite in WAL mode (internal/db.Open's PRAGMA), so an ordinary write
-  // lands in the -wal file, not the main one, which only gets touched on
-  // the occasional checkpoint -- watching the wrong path would silently
-  // just never fire. Mirrors notch's own internal/db.Watch (used by the
-  // TUI for this exact purpose) and weather/Panel.qml's locationFile,
-  // the precedent for this FileView{watchChanges:true} idiom in this
-  // shell. Confirmed firing on a real notch write (StartEntry through a
-  // WAL-mode DB) via internal/db/watch_test.go's TestWatch_FiresOnRealWrite
-  // -- same mechanism, just the Go side of it.
-  FileView {
-    id: dbWalWatch
-    path: root.dbPath + "-wal"
-    watchChanges: true
-    onFileChanged: dbChangeDebounce.restart()
+  // fallback below. An earlier version of this watched "<dbPath>-wal" via
+  // FileView{watchChanges:true}: notch opens sqlite in WAL mode, so an
+  // ordinary write lands there first. That turned out to self-trigger --
+  // *every* notch invocation, reads included, opens/checkpoints/closes
+  // that file (confirmed with inotifywait), so refreshStatus()'s own
+  // "notch status -json"/"notch tasks -json" reads re-fired the same
+  // watch that triggered them, an unbounded refresh loop rather than the
+  // efficient push this was meant to be.
+  //
+  // QML/Quickshell has no SQLite binding, so unlike notch's own TUI (which
+  // can hold a connection open and check PRAGMA data_version directly --
+  // see internal/db/watch.go) this side can only shell out. "notch watch"
+  // exists for exactly that: run once as a long-lived background process,
+  // it holds its own persistent connection and does that same
+  // data_version check, printing a line only on a genuine external write
+  // and staying silent on reads -- including this plugin's own. Mirrors
+  // Clipboard.qml's "wl-paste --watch" idiom: setpriv --pdeathsig TERM so
+  // the child dies with the shell instead of orphaning, onExited restarts
+  // it rather than leaving the fast path dead for the rest of the session.
+  Process {
+    id: dbWatchProc
+    command: ["setpriv", "--pdeathsig", "TERM", "notch", "watch"]
+    onExited: dbWatchRestartTimer.restart()
+    stdout: SplitParser {
+      onRead: function(line) { dbChangeDebounce.restart() }
+    }
   }
 
-  // Coalesces the burst of events one write can produce (main file, -wal,
-  // -shm can each touch) into one refresh, same reasoning and duration as
-  // notch's own internal/db.Watch debounce.
+  Timer {
+    id: dbWatchRestartTimer
+    interval: 1000
+    repeat: false
+    onTriggered: {
+      if (!dbWatchProc.running) dbWatchProc.running = true
+    }
+  }
+
+  // Coalesces a burst of "changed" lines (a start immediately followed by
+  // a stop, say landing in separate debounce windows server-side) into one
+  // refresh, same reasoning and duration as notch's own internal/db.Watch
+  // debounce.
   Timer {
     id: dbChangeDebounce
     interval: 75
@@ -415,12 +428,11 @@ Panel {
     }
   }
 
-  // Fallback only: dbWalWatch above is the fast, primary path. This just
-  // guards against it having failed to start (e.g. NOTCH_DB pointed
-  // somewhere that doesn't exist yet) or missed an event, so a refresh
-  // still happens eventually rather than never -- same "watch primary,
-  // slow poll fallback" split notch's own TUI now uses (TickMsg's
-  // tickFallbackTicks vs dbWatchMsg).
+  // Fallback only: dbWatchProc above is the fast, primary path. This just
+  // guards against it having failed to start (e.g. notch not yet on PATH)
+  // or missed an event, so a refresh still happens eventually rather than
+  // never -- same "watch primary, slow poll fallback" split notch's own
+  // TUI now uses (TickMsg's tickFallbackTicks vs dbWatchMsg).
   Timer {
     interval: 15000
     running: true
