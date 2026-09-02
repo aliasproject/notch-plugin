@@ -229,9 +229,12 @@ Panel {
       // Icon zone: its own MouseArea, layered on top of (and consuming
       // clicks before) WidgetButton's own full-area mouseArea underneath --
       // standard QtQuick overlay hit-testing, no special wiring needed.
-      // notch has no true pause/resume, only start/stop, so this stops the
-      // running entry outright (same action the popout's active row does),
-      // not a resumable pause.
+      // A distinct "md-stop" glyph (not the timer glyph idle uses) signals
+      // this icon does something different while running -- and it's a
+      // stop icon specifically, not pause, because notch has no true
+      // pause/resume, only start/stop: this ends the running entry
+      // outright (same action the popout's active row does), and there's
+      // no way to silently resume the same entry later without a gap.
       Item {
         width: Style.bar.iconCanvas
         height: Style.bar.iconCanvas
@@ -239,7 +242,7 @@ Panel {
 
         OpticalGlyph {
           anchors.fill: parent
-          text: "󱎫"
+          text: "󰓛"
           fontFamily: button.fontFamily
           fontSize: Style.bar.iconFont
           color: button.foreground
@@ -266,9 +269,28 @@ Panel {
     }
   }
 
+  // Popout anchor point, deliberately NOT `button` itself: KeyboardPanel
+  // centers the popout under anchorItem's midpoint (anchorScreenPos.x +
+  // anchorW/2), and button's own width/center move every time
+  // idle<->running animates (fixedWidth above). Anchoring directly to
+  // button would drag the open popout sideways along with that animation
+  // every time a timer starts or stops. button's *left* edge never moves
+  // though -- nothing before this widget in DraggableRegion.qml's Flow
+  // resizes, so only button's right edge shifts as it grows/shrinks. This
+  // marker pins a canonical iconSlot-wide box to that stable left edge, so
+  // the popout's computed center is constant regardless of running state.
+  Item {
+    id: panelAnchor
+    anchors.left: button.left
+    anchors.verticalCenter: button.verticalCenter
+    width: Style.bar.iconSlot
+    height: button.height
+    visible: false
+  }
+
   KeyboardPanel {
     id: panel
-    anchorItem: button
+    anchorItem: panelAnchor
     owner: root
     bar: root.bar
     open: root.opened
