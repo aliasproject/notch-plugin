@@ -299,6 +299,17 @@ Panel {
             fontFamily: root.bar.fontFamily
           }
 
+          // Not Button here: Button is single-line, and a combined
+          // "Client › Project" label at body size ran under the trailing
+          // time instead of eliding. This anchors the label block between
+          // the icon and the time (same technique as the hero row above:
+          // heroLabels anchored icon.right..heroTime.left) so both label
+          // lines are actually bounded and elide instead of overflowing --
+          // name (the thing you're timing) bold and larger on top, client
+          // dim and smaller below, time always visible on the right.
+          // Hover/active fills reuse Style's own token functions (the same
+          // ones Button.qml uses internally) so the look still matches the
+          // rest of the kit without Button's single-line layout.
           Repeater {
             model: root.projects
             Item {
@@ -308,30 +319,80 @@ Panel {
               readonly property int displaySeconds: (modelData.totalSeconds || 0) + (isActive ? root.elapsedSeconds : 0)
 
               width: parent.width
-              height: rowButton.implicitHeight
+              height: labels.implicitHeight + Style.space(16)
 
-              Button {
-                id: rowButton
+              MouseArea {
+                id: rowMouse
                 anchors.fill: parent
-                leftAlign: true
-                iconText: row.isActive ? "⚡" : "▶"
-                text: (modelData.clientName ? modelData.clientName + " › " : "") + modelData.name
-                active: row.isActive
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-                bordered: true
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
                 onClicked: row.isActive ? root.stopTimer() : root.startProject(modelData.id)
               }
 
+              Rectangle {
+                anchors.fill: parent
+                radius: Style.cornerRadius
+                color: row.isActive
+                  ? Style.selectedFillFor(root.bar.foreground, Color.accent)
+                  : (rowMouse.containsMouse ? Style.hoverFillFor(root.bar.foreground, Color.accent) : "transparent")
+
+                Behavior on color { ColorAnimation { duration: 120 } }
+              }
+
               Text {
+                id: rowIcon
+                textFormat: Text.PlainText
+                text: row.isActive ? "⚡" : "▶"
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.icon
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Text {
+                id: rowTime
                 textFormat: Text.PlainText
                 text: Model.formatSeconds(row.displaySeconds)
                 color: row.isActive ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.4)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.bodySmall
                 anchors.right: parent.right
-                anchors.rightMargin: Style.space(12)
+                anchors.rightMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Column {
+                id: labels
+                anchors.left: rowIcon.right
+                anchors.leftMargin: Style.space(10)
+                anchors.right: rowTime.left
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(1)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: row.modelData.name
+                  color: root.bar.foreground
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                  elide: Text.ElideRight
+                  width: parent.width
+                }
+
+                Text {
+                  textFormat: Text.PlainText
+                  visible: row.modelData.clientName !== ""
+                  text: row.modelData.clientName
+                  color: Qt.darker(root.bar.foreground, 1.4)
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideRight
+                  width: parent.width
+                }
               }
             }
           }
