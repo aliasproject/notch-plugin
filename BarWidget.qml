@@ -3,7 +3,6 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
-import "."
 import "Model.js" as Model
 
 // Bar-widget entry point for the notch plugin (see manifest.json). One
@@ -757,6 +756,143 @@ Panel {
           fontFamily: root.bar.fontFamily
           bordered: true
           onClicked: root.openTui()
+        }
+      }
+    }
+  }
+
+  // Inline, not a separate NameField.qml: Quickshell's plugin loader
+  // (WidgetRegistry.qml's Qt.createComponent(dir + "/" + entry)) resolves
+  // only the single manifest-declared entry point against its own "qs:"
+  // virtual filesystem -- neither an implicit same-directory type lookup
+  // nor an explicit `import "."` found a sibling .qml file there the way
+  // a normal on-disk QML module would. shell/plugins/panels/power/Panel.qml
+  // hits the identical need (small reusable sub-pieces, one file) with the
+  // same fix: `component X: Y {}` declared inline (see its own
+  // InfoPair/InfoLabel/InfoValue at the bottom of that file).
+  //
+  // Lightweight typeahead text field: type to filter existing options,
+  // click a match to select it, or just leave your own text as-is to
+  // create something new -- this only handles input + suggestion display,
+  // the caller decides what "new" means (here, notch's own
+  // --client-name/--project-name flags resolve-or-create). Modeled after
+  // notch's TUI new-timer form (client/project fields with live-filtered
+  // matches and a synthetic "+ Create X" hint), simplified for the popout:
+  // an inline suggestion list under the field rather than a floating popup
+  // with keyboard list-navigation -- qs.Ui's own SearchableDropdown is
+  // pick-an-existing-option only (no way to submit free text), which is
+  // exactly the gap this fills.
+  component NameField: Item {
+    id: nameFieldRoot
+
+    property string text: ""
+    property var options: []   // [{id, name, ...}, ...] -- name is matched on
+    property string placeholderText: ""
+    property color foreground: Color.foreground
+    property color accent: Color.accent
+    property string fontFamily: Style.font.family
+
+    signal textEdited(string text)
+    signal optionSelected(var option)
+
+    readonly property string _query: text.trim().toLowerCase()
+    readonly property bool _hasExactMatch: options.some(function(o) { return o.name.toLowerCase() === nameFieldRoot._query })
+    readonly property var _matches: {
+      if (nameFieldRoot._query === "") return []
+      var out = []
+      for (var i = 0; i < options.length; i++) {
+        if (options[i].name.toLowerCase().indexOf(nameFieldRoot._query) !== -1) {
+          out.push(options[i])
+          if (out.length >= 5) break
+        }
+      }
+      return out
+    }
+    readonly property bool _showCreateHint: nameFieldRoot._query !== "" && !nameFieldRoot._hasExactMatch
+    readonly property bool _showSuggestions: nameFieldRoot._matches.length > 0 || nameFieldRoot._showCreateHint
+
+    implicitWidth: Style.space(200)
+    implicitHeight: nameFieldColumn.implicitHeight
+
+    Column {
+      id: nameFieldColumn
+      width: parent.width
+      spacing: Style.space(4)
+
+      TextField {
+        width: parent.width
+        placeholderText: nameFieldRoot.placeholderText
+        text: nameFieldRoot.text
+        foreground: nameFieldRoot.foreground
+        accent: nameFieldRoot.accent
+        font.family: nameFieldRoot.fontFamily
+        onTextChanged: {
+          nameFieldRoot.text = text
+          nameFieldRoot.textEdited(text)
+        }
+      }
+
+      Column {
+        width: parent.width
+        visible: nameFieldRoot._showSuggestions
+        spacing: Style.space(2)
+
+        Repeater {
+          model: nameFieldRoot._matches
+          Rectangle {
+            id: matchRow
+            required property var modelData
+            width: parent.width
+            height: matchLabel.implicitHeight + Style.space(10)
+            radius: Style.cornerRadius
+            color: matchMouse.containsMouse ? Style.hoverFillFor(nameFieldRoot.foreground, nameFieldRoot.accent) : "transparent"
+
+            Behavior on color { ColorAnimation { duration: 120 } }
+
+            Text {
+              id: matchLabel
+              textFormat: Text.PlainText
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(8)
+              anchors.rightMargin: Style.space(8)
+              text: matchRow.modelData.name
+              color: nameFieldRoot.foreground
+              font.family: nameFieldRoot.fontFamily
+              font.pixelSize: Style.font.body
+              elide: Text.ElideRight
+            }
+
+            MouseArea {
+              id: matchMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                nameFieldRoot.text = matchRow.modelData.name
+                nameFieldRoot.optionSelected(matchRow.modelData)
+              }
+            }
+          }
+        }
+
+        // Purely a hint, not a distinct action -- leaving the typed text
+        // as it is already means "create new" once the form submits
+        // (notch start --client-name/--project-name resolve-or-create),
+        // so there's nothing this row needs to do beyond confirming
+        // that's what'll happen.
+        Text {
+          visible: nameFieldRoot._showCreateHint
+          textFormat: Text.PlainText
+          leftPadding: Style.space(8)
+          text: "+ Create “" + nameFieldRoot.text.trim() + "”"
+          color: nameFieldRoot.accent
+          font.family: nameFieldRoot.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.italic: true
+          elide: Text.ElideRight
+          width: parent.width
         }
       }
     }
