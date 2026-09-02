@@ -150,7 +150,7 @@ Panel {
   implicitHeight: button.implicitHeight
 
   // WidgetButton, not BarIconButton: BarIconButton is a fixed icon-slot
-  // square meant for single glyphs, so a running timer's "⏱ Build feature ·
+  // square meant for single glyphs, so a running timer's "󱎫 Build feature ·
   // 1:23:45" doesn't fit it. Idle and running are genuinely different
   // shapes, so the button switches modes between them, same as
   // shell/plugins/panels/clock/Panel.qml switches its own WidgetButton
@@ -158,8 +158,13 @@ Panel {
   //   - idle: fixedWidth pinned to Style.bar.iconSlot (matching every
   //     sibling BarIconButton's slot exactly) and an OpticalGlyph -- the
   //     same optically-corrected glyph rendering BarIconButton itself uses
-  //     internally -- so the idle "⏱" is pixel-identical in size and
-  //     centering to the other bar icons.
+  //     internally -- so the idle icon is pixel-identical in size and
+  //     centering to the other bar icons. The glyph itself is the Nerd
+  //     Font "md-timer" PUA codepoint (U+F13AB), not the plain Unicode "⏱"
+  //     stopwatch character -- that one renders noticeably smaller than
+  //     every sibling's purpose-built icon glyph even at the same
+  //     Style.bar.iconFont size, since it isn't part of the icon glyph set
+  //     the rest of the bar draws from.
   //   - running: label text, auto-width (WidgetButton's default), so
   //     arbitrary-length task text grows the slot instead of overflowing it.
   //     Ticks every second locally (see elapsedSeconds) rather than only
@@ -173,7 +178,7 @@ Panel {
     fixedWidth: root.running ? -1 : Style.bar.iconSlot
     labelVisible: root.running
     hasVisualContent: root.running ? text !== "" : true
-    text: root.running ? ("⏱ " + root.statusTask + " · " + root.heroTimeText) : ""
+    text: root.running ? ("󱎫 " + root.statusTask + " · " + root.heroTimeText) : ""
     tooltipText: root.statusTooltip
     onPressed: root.toggle()
 
@@ -185,7 +190,7 @@ Panel {
 
       OpticalGlyph {
         anchors.fill: parent
-        text: "⏱"
+        text: "󱎫"
         fontFamily: button.fontFamily
         fontSize: Style.bar.iconFont
         color: button.foreground
@@ -228,7 +233,7 @@ Panel {
           Text {
             id: heroIcon
             textFormat: Text.PlainText
-            text: "⏱"
+            text: "󱎫"
             color: root.bar.foreground
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.display
