@@ -178,6 +178,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
+    clip: true
     fixedWidth: root.running ? (runningRow.implicitWidth + Style.space(17)) : Style.bar.iconSlot
     labelVisible: false
     hasVisualContent: true
@@ -188,6 +189,21 @@ Panel {
     // any click on the running row that isn't over the icon's own
     // MouseArea below -- i.e. the time digits, or idle mode entirely.
     onPressed: root.toggle()
+
+    // Idle<->running swaps a small fixed icon slot for a much wider
+    // icon+time row -- animating fixedWidth (which WidgetButton's own
+    // implicitWidth mirrors 1:1, and root's implicitWidth mirrors that in
+    // turn) makes DraggableRegion.qml's Flow reflow every widget after
+    // this one smoothly, frame by frame, instead of snapping them sideways
+    // in one frame every time a timer starts/stops. Same duration/easing
+    // shell/plugins/panels/power/Panel.qml already uses for its battery
+    // fill bar's width. clip: true above keeps the still-growing/shrinking
+    // content from spilling past the button's current (mid-animation)
+    // bounds while this runs -- the DraggableRegion.qml Flow layout itself
+    // is intentionally untouched (it's shared by every widget, first- and
+    // third-party, and its clock-anchor math is deliberately precise about
+    // reading live x/width; that's not this plugin's file to change).
+    Behavior on fixedWidth { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
 
     Item {
       visible: !root.running
