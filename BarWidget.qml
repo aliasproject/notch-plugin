@@ -413,8 +413,12 @@ Panel {
                 && modelData.task === root.statusTask
               readonly property int displaySeconds: (modelData.totalSeconds || 0) + (isActive ? root.elapsedSeconds : 0)
               readonly property string primaryLabel: modelData.task !== "" ? modelData.task : modelData.projectName
+              // Client › Project, matching notch's own tooltip breadcrumb
+              // convention (internal/status.FormatJSON: "%s › %s\n%s" =
+              // client, project, task) -- same order the hero above uses,
+              // rather than a third, invented order for this row.
               readonly property string secondaryLabel: modelData.task !== ""
-                ? (modelData.projectName + (modelData.clientName ? " › " + modelData.clientName : ""))
+                ? ((modelData.clientName ? modelData.clientName + " › " : "") + modelData.projectName)
                 : modelData.clientName
 
               width: parent.width
