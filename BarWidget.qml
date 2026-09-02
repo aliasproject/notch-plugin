@@ -13,9 +13,9 @@ import "Model.js" as Model
 // the shell needs to route clicks/IPC to it.
 //
 // notch itself has no daemon: every action here is a one-shot CLI call
-// ("notch status/projects/start/stop -json") that opens the sqlite db,
-// does one thing, and exits — see notch's README "Scripting" section.
-// The popout's hero clock and each project row's running time tick
+// ("notch status/tasks/start/stop -json") that opens the sqlite db, does
+// one thing, and exits — see notch's README "Scripting" section.
+// The popout's hero clock and the active task row's running time tick
 // locally between polls (from the "startTime" the status JSON reports),
 // rather than re-spawning notch every second, for a smooth live readout.
 Panel {
@@ -31,7 +31,7 @@ Panel {
   property int statusProjectId: 0
   property string statusProjectName: ""
   property string statusClientName: ""
-  property var projects: []
+  property var recentTasks: []
   property real nowMs: Date.now()
 
   readonly property bool running: statusClass === "running"
@@ -48,13 +48,13 @@ Panel {
     if (!statusProc.running) statusProc.running = true
   }
 
-  function refreshProjects() {
-    if (!projectsProc.running) projectsProc.running = true
+  function refreshTasks() {
+    if (!tasksProc.running) tasksProc.running = true
   }
 
-  function startProject(projectId) {
+  function startTask(projectId, task) {
     if (actionProc.running) return
-    actionProc.command = ["notch", "start", "--project", String(projectId)]
+    actionProc.command = ["notch", "start", "--project", String(projectId), "--task", task || ""]
     actionProc.running = true
   }
 
@@ -73,7 +73,7 @@ Panel {
     launchProc.running = true
   }
 
-  onOpenedChanged: if (opened) refreshProjects()
+  onOpenedChanged: if (opened) refreshTasks()
 
   Process {
     id: statusProc
@@ -96,11 +96,11 @@ Panel {
   }
 
   Process {
-    id: projectsProc
-    command: ["notch", "projects", "-json"]
+    id: tasksProc
+    command: ["notch", "tasks", "-json"]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.projects = Model.parseProjects(text)
+      onStreamFinished: root.recentTasks = Model.parseTasks(text)
     }
   }
 
@@ -112,7 +112,7 @@ Panel {
     id: actionProc
     onExited: {
       root.refreshStatus()
-      root.refreshProjects()
+      root.refreshTasks()
     }
   }
 
@@ -287,36 +287,43 @@ Panel {
           foreground: root.bar.foreground
         }
 
-        // ---------- Timers: flat list, running one highlighted ----------
+        // ---------- Recent timers: flat list, running one highlighted ----------
         Column {
           width: parent.width
           spacing: Style.space(8)
-          visible: root.projects.length > 0
+          visible: root.recentTasks.length > 0
 
           PanelSectionHeader {
-            text: "TIMERS"
+            text: "RECENT TIMERS"
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
           }
 
-          // Not Button here: Button is single-line, and a combined
-          // "Client › Project" label at body size ran under the trailing
-          // time instead of eliding. This anchors the label block between
-          // the icon and the time (same technique as the hero row above:
-          // heroLabels anchored icon.right..heroTime.left) so both label
-          // lines are actually bounded and elide instead of overflowing --
-          // name (the thing you're timing) bold and larger on top, client
-          // dim and smaller below, time always visible on the right.
-          // Hover/active fills reuse Style's own token functions (the same
-          // ones Button.qml uses internally) so the look still matches the
-          // rest of the kit without Button's single-line layout.
+          // Not Button here: Button is single-line, and a combined label
+          // at body size ran under the trailing time instead of eliding.
+          // This anchors the label block between the icon and the time
+          // (same technique as the hero row above: heroLabels anchored
+          // icon.right..heroTime.left) so both label lines are actually
+          // bounded and elide instead of overflowing -- task (the specific
+          // thing being timed) bold and larger on top, project › client
+          // dim and smaller below (client drops off first via elide if it
+          // doesn't fit), time always visible on the right. Hover/active
+          // fills reuse Style's own token functions (the same ones
+          // Button.qml uses internally) so the look still matches the rest
+          // of the kit without Button's single-line layout.
           Repeater {
-            model: root.projects
+            model: root.recentTasks
             Item {
               id: row
               required property var modelData
-              readonly property bool isActive: root.running && modelData.id === root.statusProjectId
+              readonly property bool isActive: root.running
+                && modelData.projectId === root.statusProjectId
+                && modelData.task === root.statusTask
               readonly property int displaySeconds: (modelData.totalSeconds || 0) + (isActive ? root.elapsedSeconds : 0)
+              readonly property string primaryLabel: modelData.task !== "" ? modelData.task : modelData.projectName
+              readonly property string secondaryLabel: modelData.task !== ""
+                ? (modelData.projectName + (modelData.clientName ? " › " + modelData.clientName : ""))
+                : modelData.clientName
 
               width: parent.width
               height: labels.implicitHeight + Style.space(16)
@@ -326,7 +333,7 @@ Panel {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: row.isActive ? root.stopTimer() : root.startProject(modelData.id)
+                onClicked: row.isActive ? root.stopTimer() : root.startTask(modelData.projectId, modelData.task)
               }
 
               Rectangle {
@@ -374,7 +381,7 @@ Panel {
 
                 Text {
                   textFormat: Text.PlainText
-                  text: row.modelData.name
+                  text: row.primaryLabel
                   color: root.bar.foreground
                   font.family: root.bar.fontFamily
                   font.pixelSize: Style.font.body
@@ -385,8 +392,8 @@ Panel {
 
                 Text {
                   textFormat: Text.PlainText
-                  visible: row.modelData.clientName !== ""
-                  text: row.modelData.clientName
+                  visible: row.secondaryLabel !== ""
+                  text: row.secondaryLabel
                   color: Qt.darker(root.bar.foreground, 1.4)
                   font.family: root.bar.fontFamily
                   font.pixelSize: Style.font.caption

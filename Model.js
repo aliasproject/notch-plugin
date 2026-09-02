@@ -31,13 +31,13 @@ function parseStatus(raw) {
   }
 }
 
-function parseProjects(raw) {
+function parseTasks(raw) {
   if (!raw) return []
   try {
     var parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
-    return parsed.filter(function(p) {
-      return p && typeof p.id === "number" && typeof p.name === "string"
+    return parsed.filter(function(t) {
+      return t && typeof t.projectId === "number" && typeof t.projectName === "string"
     })
   } catch (e) {
     return []
