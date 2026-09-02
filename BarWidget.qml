@@ -57,6 +57,11 @@ Panel {
   // refreshTasks() -- see statusProc and actionProc below for why this
   // can't just be two independent calls.
   property bool tasksRefreshPending: false
+  // The most recently started task's "projectId task" key, kept even
+  // after it stops -- see displayedTasks. Reset on a fresh open (in
+  // onOpenedChanged), so a session doesn't keep artificially pinning
+  // something from a previous visit once the popout's been closed.
+  property string lastActiveKey: ""
 
   readonly property bool running: statusClass === "running"
   readonly property real startTimeMs: statusStartTime !== "" ? Date.parse(statusStartTime) : 0
@@ -72,29 +77,41 @@ Panel {
   // *finished* entries (see notch's ListRecentTasks), so a task started
   // just now -- even one that's been done before -- doesn't appear in
   // recentTasks at all until it's stopped. This pins whichever task is
-  // currently running to the front for display, pulling its existing row
-  // (with its real prior total) up if it has one, or synthesizing one at
-  // 0 total if it doesn't -- so starting a timer shows it at the top
-  // immediately, without waiting for a stop. recentTasks itself (and its
-  // stable ordering from Model.reorderTasksInPlace) is untouched; this is
-  // purely a display-time view over it.
+  // currently running (or, once stopped, whichever ran most recently this
+  // session -- lastActiveKey) to the front for display, pulling its
+  // existing row (with its real prior total) up if it has one, or
+  // synthesizing one at 0 total if it doesn't.
+  //
+  // Pinning by lastActiveKey continues *after* the task stops, not just
+  // while running: restarting an old, further-down task moves it to the
+  // top immediately (the running-only case), but it's still genuinely the
+  // most-recently-used task the moment you stop it too -- reverting to
+  // wherever Model.reorderTasksInPlace's stable merge happened to leave it
+  // (its old, pre-restart position) would hide the one piece of reordering
+  // that's actually correct, not just incidental churn. Everything *else*
+  // in the list still keeps its stable order.
   readonly property var displayedTasks: {
-    if (!running) return recentTasks
-    var activeKey = statusProjectId + " " + statusTask
-    var activeEntry = null
+    var pinKey = running ? (statusProjectId + " " + statusTask) : lastActiveKey
+    if (pinKey === "") return recentTasks
+    var pinnedEntry = null
     var rest = []
     for (var i = 0; i < recentTasks.length; i++) {
       var t = recentTasks[i]
-      if (!activeEntry && (t.projectId + " " + t.task) === activeKey) activeEntry = t
+      if (!pinnedEntry && (t.projectId + " " + t.task) === pinKey) pinnedEntry = t
       else rest.push(t)
     }
-    if (!activeEntry) {
-      activeEntry = {
+    if (!pinnedEntry) {
+      // Nothing to pin (e.g. a stale lastActiveKey the tasks list no
+      // longer has, or the server hasn't reported the finished entry
+      // back yet) -- if we're not even running, there's nothing to
+      // synthesize either, so just show the list as-is.
+      if (!running) return recentTasks
+      pinnedEntry = {
         projectId: statusProjectId, projectName: statusProjectName,
         clientName: statusClientName, task: statusTask, totalSeconds: 0
       }
     }
-    return [activeEntry].concat(rest)
+    return [pinnedEntry].concat(rest)
   }
 
   // Project field's suggestion pool, narrowed to whichever client is
@@ -215,6 +232,7 @@ Panel {
 
   onOpenedChanged: if (opened) {
     tasksNeedFreshSort = true
+    lastActiveKey = ""
     refreshTasks()
     refreshProjects()
     refreshClients()
@@ -237,6 +255,7 @@ Panel {
         root.statusProjectId = parsed.projectId
         root.statusProjectName = parsed.projectName
         root.statusClientName = parsed.clientName
+        if (parsed.class === "running") root.lastActiveKey = parsed.projectId + " " + parsed.task
         root.nowMs = Date.now()
         // Only after status has actually landed -- see
         // tasksRefreshPending's own comment for why this can't just be a
