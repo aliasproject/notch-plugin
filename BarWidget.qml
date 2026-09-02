@@ -33,6 +33,11 @@ Panel {
   property string statusClientName: ""
   property var recentTasks: []
   property real nowMs: Date.now()
+  // true right before a refresh that should re-sort to the server's true
+  // recency order (a fresh open); false for a refresh triggered by a
+  // start/stop action while already open, which should keep the on-screen
+  // row order fixed instead -- see Model.reorderTasksInPlace.
+  property bool tasksNeedFreshSort: true
 
   readonly property bool running: statusClass === "running"
   readonly property real startTimeMs: statusStartTime !== "" ? Date.parse(statusStartTime) : 0
@@ -73,7 +78,10 @@ Panel {
     launchProc.running = true
   }
 
-  onOpenedChanged: if (opened) refreshTasks()
+  onOpenedChanged: if (opened) {
+    tasksNeedFreshSort = true
+    refreshTasks()
+  }
 
   Process {
     id: statusProc
@@ -100,14 +108,22 @@ Panel {
     command: ["notch", "tasks", "-json"]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.recentTasks = Model.parseTasks(text)
+      onStreamFinished: {
+        var incoming = Model.parseTasks(text)
+        root.recentTasks = root.tasksNeedFreshSort
+          ? incoming
+          : Model.reorderTasksInPlace(root.recentTasks, incoming)
+        root.tasksNeedFreshSort = false
+      }
     }
   }
 
   // Fire-and-forget: start/stop don't print anything worth reading, so
   // just re-poll status + totals once the process exits (whether it
   // succeeded or not -- a failed start/stop should still show the real
-  // current state, not a stale optimistic one).
+  // current state, not a stale optimistic one). tasksNeedFreshSort is left
+  // false here, so this refresh updates each row's data in place without
+  // re-sorting/shifting the list -- see Model.reorderTasksInPlace.
   Process {
     id: actionProc
     onExited: {
