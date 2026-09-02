@@ -108,6 +108,13 @@ Panel {
     onTriggered: root.refreshStatus()
   }
 
+  // root is a plain Item (Panel.qml's base) with no implicit size of its
+  // own -- every first-party bar item (system-update, weather, power)
+  // binds implicitWidth/Height to its inner button explicitly, or the bar's
+  // layout gives it zero size and it silently never appears.
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
+
   BarIconButton {
     id: button
     anchors.fill: parent
