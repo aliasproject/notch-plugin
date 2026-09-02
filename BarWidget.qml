@@ -167,134 +167,112 @@ Panel {
 
   // WidgetButton, not BarIconButton: BarIconButton is a fixed icon-slot
   // square meant for single glyphs, and a running timer's live digits need
-  // to grow the slot instead of overflowing it. Idle and running are
-  // genuinely different shapes, so the button switches modes between them,
-  // same as shell/plugins/panels/clock/Panel.qml switches its own
-  // WidgetButton between a fixed vertical icon column and a free-width
-  // horizontal label -- except neither mode here uses WidgetButton's own
-  // built-in label at all (labelVisible stays false always): both render
-  // their own OpticalGlyph/Text children instead, so the running state can
-  // give its icon its own MouseArea (see below) without fighting
-  // WidgetButton's single whole-button click region.
-  //   - idle: fixedWidth pinned to Style.bar.iconSlot (matching every
-  //     sibling BarIconButton's slot exactly) and an OpticalGlyph -- the
-  //     same optically-corrected glyph rendering BarIconButton itself uses
-  //     internally -- so the idle icon is pixel-identical in size and
-  //     centering to the other bar icons.
-  //   - running: icon + live time only (no task name -- deliberately kept
-  //     minimal; the task is one click away in the popout), auto-width
-  //     sized from the row's own implicit width since nothing here comes
-  //     from WidgetButton's label metrics anymore.
-  // The glyph is the Nerd Font "md-timer" PUA codepoint (U+F13AB), not the
-  // plain Unicode "⏱" stopwatch character -- that one renders noticeably
-  // smaller than every sibling's purpose-built icon glyph even at the same
-  // Style.bar.iconFont size, since it isn't part of the icon glyph set the
-  // rest of the bar draws from.
+  // room a fixed slot can't give them. Neither state uses WidgetButton's
+  // own built-in label (labelVisible stays false always) -- both render
+  // their own OpticalGlyph/Text children instead, so the icon can carry
+  // its own MouseArea (see below) without fighting WidgetButton's single
+  // whole-button click region.
+  //
+  // The icon sits at the exact same position whether idle or running
+  // (iconBox's left anchor/margin never change) -- only its glyph swaps
+  // (md-timer <-> md-stop) and the time text next to it appears/disappears.
+  // Deliberately no animation/Behavior on fixedWidth here: an earlier
+  // version animated the width so DraggableRegion.qml's Flow would reflow
+  // neighboring widgets smoothly, but combined with the icon being
+  // re-centered as the button grew, it read as the icon vanishing and the
+  // whole thing sliding in. Keeping the icon's position fixed removes the
+  // need for that in the first place -- nothing in this widget visually
+  // moves, so an instant width change no longer looks like a jump, just
+  // the time appearing where there's now room for it.
+  //
+  // The glyph is the Nerd Font "md-timer"/"md-stop" PUA codepoints, not
+  // plain Unicode characters -- those render noticeably smaller than every
+  // sibling's purpose-built icon glyph even at the same Style.bar.iconFont
+  // size, since they aren't part of the icon glyph set the rest of the bar
+  // draws from.
   WidgetButton {
     id: button
     anchors.fill: parent
     bar: root.bar
     clip: true
-    fixedWidth: root.running ? (runningRow.implicitWidth + Style.space(17)) : Style.bar.iconSlot
+    // Same left inset idle's centered icon already sits at (iconSlot is
+    // wider than iconCanvas; centering one inside the other is this same
+    // margin), reused here so iconBox's position is identical in both
+    // fixedWidth branches -- that identity is what keeps the icon still.
+    readonly property real iconInset: (Style.bar.iconSlot - Style.bar.iconCanvas) / 2
+    fixedWidth: root.running
+      ? (iconInset + Style.bar.iconCanvas + Style.space(6) + timeText.implicitWidth + iconInset)
+      : Style.bar.iconSlot
     labelVisible: false
     hasVisualContent: true
     tooltipText: root.statusTooltip
     // Whole-button fallback: catches the cross-widget popout-switch path
     // (KeyboardPanel's dismissArea calls triggerPress() directly on the
     // registered click target, bypassing normal hit-testing entirely) and
-    // any click on the running row that isn't over the icon's own
-    // MouseArea below -- i.e. the time digits, or idle mode entirely.
+    // any click that isn't over the icon's own MouseArea below -- i.e. the
+    // time digits when running.
     onPressed: root.toggle()
 
-    // Idle<->running swaps a small fixed icon slot for a much wider
-    // icon+time row -- animating fixedWidth (which WidgetButton's own
-    // implicitWidth mirrors 1:1, and root's implicitWidth mirrors that in
-    // turn) makes DraggableRegion.qml's Flow reflow every widget after
-    // this one smoothly, frame by frame, instead of snapping them sideways
-    // in one frame every time a timer starts/stops. Same duration/easing
-    // shell/plugins/panels/power/Panel.qml already uses for its battery
-    // fill bar's width. clip: true above keeps the still-growing/shrinking
-    // content from spilling past the button's current (mid-animation)
-    // bounds while this runs -- the DraggableRegion.qml Flow layout itself
-    // is intentionally untouched (it's shared by every widget, first- and
-    // third-party, and its clock-anchor math is deliberately precise about
-    // reading live x/width; that's not this plugin's file to change).
-    Behavior on fixedWidth { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
-
     Item {
-      visible: !root.running
-      anchors.centerIn: parent
+      id: iconBox
       width: Style.bar.iconCanvas
       height: Style.bar.iconCanvas
+      anchors.left: parent.left
+      anchors.leftMargin: button.iconInset
+      anchors.verticalCenter: parent.verticalCenter
 
       OpticalGlyph {
         anchors.fill: parent
-        text: "󱎫"
+        // Stop, not pause: notch has no true pause/resume, only
+        // start/stop -- this ends the running entry outright (same action
+        // the popout's active row does), and there's no way to silently
+        // resume the same entry later without a gap.
+        text: root.running ? "󰓛" : "󱎫"
         fontFamily: button.fontFamily
         fontSize: Style.bar.iconFont
         color: button.foreground
       }
+
+      // Always live (not just while running): idle and running do the
+      // same thing here anyway (toggle the popout), so there's no need to
+      // conditionally swap this MouseArea in and out.
+      MouseArea {
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.running ? root.stopTimer() : root.toggle()
+      }
     }
 
-    Row {
-      id: runningRow
+    // Sibling of iconBox, not a child -- anchored to its right edge so it
+    // simply appears/disappears next to a icon that never itself moves. No
+    // MouseArea of its own: falls through to WidgetButton's onPressed
+    // above, which opens the popout.
+    Text {
+      id: timeText
       visible: root.running
-      anchors.centerIn: parent
-      spacing: Style.space(6)
-
-      // Icon zone: its own MouseArea, layered on top of (and consuming
-      // clicks before) WidgetButton's own full-area mouseArea underneath --
-      // standard QtQuick overlay hit-testing, no special wiring needed.
-      // A distinct "md-stop" glyph (not the timer glyph idle uses) signals
-      // this icon does something different while running -- and it's a
-      // stop icon specifically, not pause, because notch has no true
-      // pause/resume, only start/stop: this ends the running entry
-      // outright (same action the popout's active row does), and there's
-      // no way to silently resume the same entry later without a gap.
-      Item {
-        width: Style.bar.iconCanvas
-        height: Style.bar.iconCanvas
-        anchors.verticalCenter: parent.verticalCenter
-
-        OpticalGlyph {
-          anchors.fill: parent
-          text: "󰓛"
-          fontFamily: button.fontFamily
-          fontSize: Style.bar.iconFont
-          color: button.foreground
-        }
-
-        MouseArea {
-          anchors.fill: parent
-          hoverEnabled: true
-          cursorShape: Qt.PointingHandCursor
-          onClicked: root.stopTimer()
-        }
-      }
-
-      // Time zone: no MouseArea of its own -- falls through to
-      // WidgetButton's onPressed above, which opens the popout.
-      Text {
-        textFormat: Text.PlainText
-        text: root.heroTimeText
-        color: button.foreground
-        font.family: button.fontFamily
-        font.pixelSize: Style.bar.iconFont
-        anchors.verticalCenter: parent.verticalCenter
-      }
+      textFormat: Text.PlainText
+      text: root.heroTimeText
+      color: button.foreground
+      font.family: button.fontFamily
+      font.pixelSize: Style.bar.iconFont
+      anchors.left: iconBox.right
+      anchors.leftMargin: Style.space(6)
+      anchors.verticalCenter: parent.verticalCenter
     }
   }
 
   // Popout anchor point, deliberately NOT `button` itself: KeyboardPanel
   // centers the popout under anchorItem's midpoint (anchorScreenPos.x +
-  // anchorW/2), and button's own width/center move every time
-  // idle<->running animates (fixedWidth above). Anchoring directly to
-  // button would drag the open popout sideways along with that animation
-  // every time a timer starts or stops. button's *left* edge never moves
-  // though -- nothing before this widget in DraggableRegion.qml's Flow
-  // resizes, so only button's right edge shifts as it grows/shrinks. This
-  // marker pins a canonical iconSlot-wide box to that stable left edge, so
-  // the popout's computed center is constant regardless of running state.
+  // anchorW/2), and button's own width/center still differ between idle
+  // and running (fixedWidth above) even though the change is instant now,
+  // not animated -- anchoring directly to button would still snap the open
+  // popout sideways every time a timer starts or stops. button's *left*
+  // edge never moves though -- nothing before this widget in
+  // DraggableRegion.qml's Flow resizes, so only button's right edge shifts
+  // as it grows/shrinks. This marker pins a canonical iconSlot-wide box to
+  // that stable left edge, so the popout's computed center is constant
+  // regardless of running state.
   Item {
     id: panelAnchor
     anchors.left: button.left
@@ -311,7 +289,10 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(320))
+    // 380, matching every other standard popout (audio/monitor/bluetooth/
+    // power/network/agents all use the same Style.space(380); clock/weather
+    // are the only first-party outliers, each for its own wider content).
+    contentWidth: panel.fittedContentWidth(Style.space(380))
     contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
     PanelKeyCatcher {
