@@ -96,6 +96,10 @@ Panel {
   // Quick-add's typed text, mirrored out of quickAddField so visibleTasks
   // can filter the list on it -- see Model.filterTasks.
   property string quickAddQuery: ""
+  // "Discard timer" confirmation (ConfirmDialog over the popout). Discard
+  // deletes the running entry outright via "notch delete" -- for an
+  // accidental start, where stopping would leave a stray short entry.
+  property bool discardConfirmOpen: false
 
   readonly property bool running: statusClass === "running"
   readonly property real startTimeMs: statusStartTime !== "" ? Date.parse(statusStartTime) : 0
@@ -369,6 +373,28 @@ Panel {
     runAction(["notch", "stop"])
   }
 
+  // Cancel is pre-selected (the clipboard plugin's clear-history confirm
+  // defaults to its destructive button; this deletes tracked time, so a
+  // reflexive Enter shouldn't be what does it).
+  function openDiscardConfirm() {
+    if (!running) return
+    quickAdding = false
+    editingTimer = false
+    discardConfirm.selectedIndex = 0
+    discardConfirmOpen = true
+    Qt.callLater(function() { discardKeys.forceActiveFocus() })
+  }
+
+  function closeDiscardConfirm() {
+    discardConfirmOpen = false
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function discardTimer() {
+    closeDiscardConfirm()
+    if (running) runAction(["notch", "delete"])
+  }
+
   // Floating terminal running the full TUI, for anything beyond a quick
   // start/stop (editing entries, reports, clients). xdg-terminal-exec is
   // the portable primitive here (not aliasOS's own aliasos-launch-tui
@@ -390,6 +416,7 @@ Panel {
   } else {
     cancelQuickAdd()
     editingTimer = false
+    discardConfirmOpen = false
   }
 
   Process {
@@ -762,7 +789,7 @@ Panel {
       // just per-field, since a focused Save/Start button needs
       // Return/Space to reach its own Keys.onReturnPressed too, not just
       // the text fields.
-      blocked: root.quickAdding || root.editingTimer
+      blocked: root.quickAdding || root.editingTimer || root.discardConfirmOpen
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveCursor(dy) }
@@ -779,6 +806,7 @@ Panel {
         if (t === "n" || t === "N" || t === "+") root.openQuickAdd()
         else if (t === "e" || t === "E") root.openEditTimer()
         else if (t === "s" || t === "S") { if (root.running) root.stopTimer() }
+        else if (t === "d" || t === "D") root.openDiscardConfirm()
         else if (t === "o" || t === "O") { root.openTui(); root.close() }
       }
 
@@ -834,7 +862,7 @@ Panel {
             id: heroLabelsArea
             anchors.left: heroIcon.right
             anchors.leftMargin: Style.space(14)
-            anchors.right: heroTime.left
+            anchors.right: discardButton.visible ? discardButton.left : heroTime.left
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             implicitHeight: heroLabels.implicitHeight
@@ -892,6 +920,23 @@ Panel {
                 fontFamily: root.bar.fontFamily
               }
             }
+          }
+
+          // Discard, beside the clock it would throw away. Only while
+          // running; it takes horizontal room from the labels (which
+          // elide), never vertical, so nothing below shifts.
+          PanelActionButton {
+            id: discardButton
+            visible: root.running
+            iconText: "󰩹"
+            fontFamily: root.bar.fontFamily
+            foreground: root.bar.foreground
+            hoverColor: root.bar.urgent
+            tooltipText: "Discard timer (d)"
+            anchors.right: heroTime.left
+            anchors.rightMargin: Style.space(8)
+            anchors.verticalCenter: parent.verticalCenter
+            onClicked: root.openDiscardConfirm()
           }
 
           Text {
@@ -1327,6 +1372,30 @@ Panel {
           bordered: true
           onClicked: root.openTui()
         }
+      }
+
+      // Holds focus while the confirm is open (keyCatcher is blocked then)
+      // and hands keys to ConfirmDialog's own handler: Left/Right/Tab
+      // switch buttons, Enter picks, Escape cancels.
+      Item {
+        id: discardKeys
+        Keys.onPressed: function(event) {
+          if (discardConfirm.handleKey(event)) event.accepted = true
+        }
+      }
+
+      ConfirmDialog {
+        id: discardConfirm
+        anchors.fill: parent
+        z: 10
+        opened: root.discardConfirmOpen
+        message: "Discard “" + (root.statusTask !== "" ? root.statusTask : root.statusProjectName) + "”? "
+          + root.heroTimeText + " of tracked time will be deleted."
+        confirmText: "Discard"
+        foreground: root.bar.foreground
+        fontFamily: root.bar.fontFamily
+        onCanceled: root.closeDiscardConfirm()
+        onConfirmed: root.discardTimer()
       }
     }
   }
