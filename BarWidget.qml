@@ -65,6 +65,11 @@ Panel {
   property string editEndText: ""
   // Validation message for the session times; shown in the form.
   property string editError: ""
+  // A whole-task edit that's been saved but not yet seen in a tasks
+  // refresh: {oldKey, newTask}. The row comes back under a new key, and
+  // this is what lets the refresh keep it in place -- see
+  // Model.applyTaskRename.
+  property var pendingRename: null
   property real nowMs: Date.now()
   // true right before a refresh that should re-sort to the server's true
   // recency order (a fresh open); false for a refresh triggered by a
@@ -572,6 +577,7 @@ Panel {
       if (task && task !== t.task) cmd.push("--task", task)
       if (clientName) cmd.push("--client-name", clientName)
       if (projectName) cmd.push("--project-name", projectName)
+      pendingRename = { oldKey: Model.taskKey(t), newTask: task !== "" ? task : t.task }
     } else if (editMode === "session") {
       var e = editTarget.entry
       var origStartMs = Date.parse(e.startTime)
@@ -706,6 +712,7 @@ Panel {
     cancelQuickAdd()
     editingTimer = false
     pendingDelete = null
+    pendingRename = null
     collapseTask()
   }
 
@@ -747,9 +754,30 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         var incoming = Model.parseTasks(text)
+        var previous = root.recentTasks
+        // Only once the edit has actually landed (the old key is gone) --
+        // a refresh that raced ahead of the write would otherwise drop the
+        // row. Then the expanded row, the pin, and the highlight follow
+        // the task to its new key.
+        var pr = root.pendingRename
+        if (pr && !incoming.some(function(t) { return Model.taskKey(t) === pr.oldKey })) {
+          root.pendingRename = null
+          if (!root.tasksNeedFreshSort) {
+            var renamed = Model.applyTaskRename(previous, incoming, pr.oldKey, pr.newTask)
+            previous = renamed.previous
+            if (renamed.newKey !== "") {
+              if (root.expandedKey === pr.oldKey) {
+                root.expandedKey = renamed.newKey
+                root.expandedTask = incoming.filter(function(t) { return Model.taskKey(t) === renamed.newKey })[0]
+              }
+              if (root.lastActiveKey === pr.oldKey) root.lastActiveKey = renamed.newKey
+              if (root.selectedItemKey === "t:" + pr.oldKey) root.selectedItemKey = "t:" + renamed.newKey
+            }
+          }
+        }
         root.recentTasks = root.tasksNeedFreshSort
           ? incoming
-          : Model.reorderTasksInPlace(root.recentTasks, incoming)
+          : Model.reorderTasksInPlace(previous, incoming)
         root.tasksNeedFreshSort = false
         // The expanded row's sessions may have changed too (a delete, a
         // start/stop, an edit in the TUI); collapse it if the task itself

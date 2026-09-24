@@ -260,6 +260,36 @@ function reorderTasksInPlace(previous, incoming) {
   return merged
 }
 
+// After a whole-task edit (rename and/or move to another client/project)
+// the row comes back from "notch tasks" under a different taskKey, which
+// reorderTasksInPlace would treat as a brand-new row and append at the
+// bottom. This swaps the edited row's old entry in `previous` for its new
+// one in `incoming`, so the stable merge keeps it where it was. The new
+// row is the incoming one with the new task name that wasn't already
+// shown; if there's none (the edit merged into a task already on screen)
+// the old row is just dropped and the merged-into row keeps its place.
+// Returns {previous, newKey}; newKey is "" when there's nothing to follow.
+function applyTaskRename(previous, incoming, oldKey, newTask) {
+  var shown = {}
+  for (var i = 0; i < previous.length; i++) shown[taskKey(previous[i])] = true
+  var replacement = null
+  for (var j = 0; j < incoming.length; j++) {
+    if (incoming[j].task === newTask && !shown[taskKey(incoming[j])]) {
+      replacement = incoming[j]
+      break
+    }
+  }
+  var out = []
+  for (var k = 0; k < previous.length; k++) {
+    if (taskKey(previous[k]) === oldKey) {
+      if (replacement) out.push(replacement)
+    } else {
+      out.push(previous[k])
+    }
+  }
+  return { previous: out, newKey: replacement ? taskKey(replacement) : "" }
+}
+
 // "H:MM:SS", matching notch's own model.FormatDuration so the bar/popout
 // never disagrees with the TUI's own formatting.
 function formatSeconds(totalSeconds) {
