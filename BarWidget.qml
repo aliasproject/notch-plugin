@@ -70,6 +70,12 @@ Panel {
   // this is what lets the refresh keep it in place -- see
   // Model.applyTaskRename.
   property var pendingRename: null
+  // The entry/task being edited is still on notch's quick-add catch-all
+  // (db.EnsureUncategorizedProject's "Uncategorized" / "General"). The
+  // client/project fields then open empty -- nothing to delete before
+  // typing the real one -- with the current value as their placeholder;
+  // left empty they keep it, since blank means "unchanged" on save.
+  property bool editingUncategorized: false
   property real nowMs: Date.now()
   // true right before a refresh that should re-sort to the server's true
   // recency order (a fresh open); false for a refresh triggered by a
@@ -512,6 +518,11 @@ Panel {
     editTarget = target
     editError = ""
     editingTimer = true
+    editingUncategorized = client === "Uncategorized" && project === "General"
+    if (editingUncategorized) {
+      client = ""
+      project = ""
+    }
     editTaskText = task; editTaskField.text = task
     editClientText = client; editClientField.text = client
     editProjectText = project; editProjectField.text = project
@@ -1416,6 +1427,8 @@ Panel {
 
             TextField {
               id: editTaskField
+              // Focus selects the whole value, so typing replaces it.
+              onActiveFocusChanged: if (activeFocus) Qt.callLater(function() { editTaskField.selectAll() })
               visible: root.editMode !== "session"
               width: parent.width
               placeholderText: "Task"
@@ -1429,7 +1442,7 @@ Panel {
               id: editClientField
               visible: root.editMode !== "session"
               width: parent.width
-              placeholderText: "Client name (or leave blank)"
+              placeholderText: root.editingUncategorized ? "Client (now Uncategorized)" : "Client name (or leave blank)"
               options: root.allClients
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
@@ -1442,7 +1455,7 @@ Panel {
               id: editProjectField
               visible: root.editMode !== "session"
               width: parent.width
-              placeholderText: "Project name (or leave blank)"
+              placeholderText: root.editingUncategorized ? "Project (now General)" : "Project name (or leave blank)"
               options: root.editProjectOptions
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
@@ -1473,6 +1486,8 @@ Panel {
 
               TextField {
                 id: editStartField
+                // Focus selects the whole value, so typing replaces it.
+                onActiveFocusChanged: if (activeFocus) Qt.callLater(function() { editStartField.selectAll() })
                 width: editEndField.visible ? (parent.width - parent.spacing) / 2 : parent.width
                 placeholderText: "Start (9:05 AM)"
                 foreground: root.bar.foreground
@@ -1483,6 +1498,8 @@ Panel {
 
               TextField {
                 id: editEndField
+                // Focus selects the whole value, so typing replaces it.
+                onActiveFocusChanged: if (activeFocus) Qt.callLater(function() { editEndField.selectAll() })
                 visible: root.editMode === "session" && root.editTarget !== null && !!root.editTarget.entry.endTime
                 width: (parent.width - parent.spacing) / 2
                 placeholderText: "End (9:40 AM)"
@@ -1495,6 +1512,8 @@ Panel {
 
             TextField {
               id: editNotesField
+              // Focus selects the whole value, so typing replaces it.
+              onActiveFocusChanged: if (activeFocus) Qt.callLater(function() { editNotesField.selectAll() })
               visible: root.editMode !== "task"
               width: parent.width
               placeholderText: "Notes (optional)"
@@ -2016,6 +2035,9 @@ Panel {
 
       TextField {
         id: nameFieldInput
+        // Focus selects the whole value, so typing a new name replaces
+        // the old one instead of appending to it.
+        onActiveFocusChanged: if (activeFocus) Qt.callLater(function() { nameFieldInput.selectAll() })
         width: parent.width
         placeholderText: nameFieldRoot.placeholderText
         text: nameFieldRoot.text
