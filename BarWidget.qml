@@ -93,6 +93,12 @@ Panel {
   // doesn't paint a stray highlight on row 0.
   property bool cursorActive: false
   property int selectedIndex: 0
+  // Which item selectedIndex points at (itemKey), so the highlight stays
+  // on the same row when rows are inserted or removed above it --
+  // expanding one task collapses another, a refresh reorders, a delete
+  // removes a row. An index alone would stay put while the rows shifted
+  // under it.
+  property string selectedItemKey: ""
   // Quick-add's typed text, mirrored out of quickAddField so visibleTasks
   // can filter the list on it -- see Model.filterTasks.
   property string quickAddQuery: ""
@@ -216,9 +222,35 @@ Panel {
     return out
   }
 
+  function itemKey(item) {
+    if (!item) return ""
+    return item.kind === "session" ? "s:" + item.entry.id : "t:" + Model.taskKey(item.task)
+  }
+
+  // Every explicit cursor move goes through here, so selectedItemKey is
+  // updated even when the index itself doesn't change.
+  function setCursor(i) {
+    selectedIndex = i
+    selectedItemKey = itemKey(visibleItems[i])
+  }
+
+  // Follow the highlighted item to its new position; only if it's gone
+  // (deleted, filtered out) fall back to clamping the old index.
   onVisibleItemsChanged: {
-    if (selectedIndex > visibleItems.length - 1) selectedIndex = Math.max(0, visibleItems.length - 1)
-    if (visibleItems.length === 0) cursorActive = false
+    if (visibleItems.length === 0) {
+      cursorActive = false
+      return
+    }
+    if (selectedItemKey !== "") {
+      for (var i = 0; i < visibleItems.length; i++) {
+        if (itemKey(visibleItems[i]) === selectedItemKey) {
+          selectedIndex = i
+          return
+        }
+      }
+    }
+    if (selectedIndex > visibleItems.length - 1) selectedIndex = visibleItems.length - 1
+    selectedItemKey = itemKey(visibleItems[selectedIndex])
   }
 
   readonly property var cursorItem: cursorActive && selectedIndex < visibleItems.length
@@ -246,10 +278,10 @@ Panel {
     if (visibleItems.length === 0) return
     if (!cursorActive) {
       cursorActive = true
-      selectedIndex = dy < 0 ? visibleItems.length - 1 : 0
+      setCursor(dy < 0 ? visibleItems.length - 1 : 0)
       return
     }
-    selectedIndex = Math.max(0, Math.min(visibleItems.length - 1, selectedIndex + dy))
+    setCursor(Math.max(0, Math.min(visibleItems.length - 1, selectedIndex + dy)))
   }
 
   // Enter/Space/click on an item: tasks start or stop; sessions aren't
@@ -270,7 +302,7 @@ Panel {
       if (item.kind === "session") {
         for (var i = 0; i < visibleItems.length; i++) {
           if (visibleItems[i].kind === "task" && Model.taskKey(visibleItems[i].task) === key) {
-            selectedIndex = i
+            setCursor(i)
             break
           }
         }
@@ -543,6 +575,7 @@ Panel {
     lastActiveKey = ""
     cursorActive = false
     selectedIndex = 0
+    selectedItemKey = ""
     refreshTasks()
     refreshProjects()
     refreshClients()
@@ -965,12 +998,10 @@ Panel {
         if (root.cursorItem) root.activateItem(root.cursorItem)
         else root.heroAction()
       }
-      // Delete (or x, PanelKeyCatcher's own delete key) deletes whatever
-      // the pointer/cursor is on -- see deleteAtCursor(). PanelKeyCatcher
-      // has no Delete binding, so that key arrives here as "\u007f" text.
+      // x is PanelKeyCatcher's own delete key; the Delete key itself is
+      // the Shortcut below (it carries no text, so textKey never sees it).
       onDeleteRequested: root.deleteAtCursor()
       onTextKey: function(t) {
-        if (t === "\u007f") { root.deleteAtCursor(); return }
         if (t === "n" || t === "N" || t === "+") root.openQuickAdd()
         else if (t === "e" || t === "E") root.openEditTimer()
         else if (t === "s" || t === "S") { if (root.running) root.stopTimer() }
@@ -1370,6 +1401,7 @@ Panel {
                 root.quickAddQuery = text
                 root.cursorActive = false
                 root.selectedIndex = 0
+                root.selectedItemKey = ""
               }
               onAccepted: root.submitQuickAdd()
               Keys.onPressed: function(event) {
@@ -1451,7 +1483,7 @@ Panel {
                 // over the list mustn't quietly change that.
                 onEntered: if (!root.quickAdding) {
                   root.cursorActive = true
-                  root.selectedIndex = row.index
+                  root.setCursor(row.index)
                 }
                 onExited: if (!root.quickAdding && root.selectedIndex === row.index) root.cursorActive = false
               }
@@ -1656,6 +1688,17 @@ Panel {
           bordered: true
           onClicked: root.openTui()
         }
+      }
+
+      // Delete deletes whatever the pointer/cursor is on -- see
+      // deleteAtCursor(). A window-level Shortcut rather than a Keys
+      // handler, so it works no matter which item in the popout has focus;
+      // off while a text field or the confirm is up, so Delete edits text
+      // there as usual.
+      Shortcut {
+        sequence: "Delete"
+        enabled: root.opened && !root.quickAdding && !root.editingTimer && !root.deleteConfirmOpen
+        onActivated: root.deleteAtCursor()
       }
 
       // Holds focus while the confirm is open (keyCatcher is blocked then)
