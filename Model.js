@@ -179,6 +179,40 @@ function formatSessionLabel(startIso, endIso, nowMs) {
   return day + " " + _clock(start) + " " + _meridiem(start) + "–" + _clock(end) + " " + _meridiem(end)
 }
 
+// A session's start or end as typed into the edit form: "9", "9:05",
+// "905", "9:05pm", "9:05 PM", "21:05". Returns ms on the local day that
+// dayStartMs begins, or NaN if unreadable. Without am/pm, 1-12 is taken
+// as written (so "9" is 9 AM) -- the form pre-fills with AM/PM anyway.
+function parseClockTime(text, dayStartMs) {
+  var m = String(text || "").trim().toLowerCase().match(/^(\d{1,2})(?::?(\d{2}))?\s*(a|am|p|pm)?$/)
+  if (!m) return NaN
+  var h = parseInt(m[1], 10)
+  var min = m[2] ? parseInt(m[2], 10) : 0
+  var ampm = m[3] ? m[3][0] : ""
+  if (min > 59) return NaN
+  if (ampm) {
+    if (h < 1 || h > 12) return NaN
+    if (h === 12) h = 0
+    if (ampm === "p") h += 12
+  } else if (h > 23) {
+    return NaN
+  }
+  var d = new Date(dayStartMs)
+  d.setHours(h, min, 0, 0)
+  return d.getTime()
+}
+
+// "9:05 AM" -- how the edit form pre-fills a session's times.
+function formatClockTime(ms) {
+  var d = new Date(ms)
+  return _clock(d) + " " + _meridiem(d)
+}
+
+// RFC3339 without milliseconds, for "notch edit --start/--end".
+function toRfc3339(ms) {
+  return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z")
+}
+
 // A task row's billing summary from "tasks -json"'s counts: "" when none
 // is invoiced, "paid"/"invoiced" when all are, else "2/3 invoiced" (paid
 // counts as invoiced -- notch only allows paid on an invoiced entry).

@@ -55,6 +55,16 @@ Panel {
   property string editClientText: ""
   property string editProjectText: ""
   property string editNotesText: ""
+  // What the edit form is editing: "running" (the running entry, from the
+  // hero), "task" (a whole task row -- every session; task/client/project
+  // only), or "session" (one entry; start/end/notes only). editTarget is
+  // that row's data: the task object, or {entry, task} for a session.
+  property string editMode: "running"
+  property var editTarget: null
+  property string editStartText: ""
+  property string editEndText: ""
+  // Validation message for the session times; shown in the form.
+  property string editError: ""
   property real nowMs: Date.now()
   // true right before a refresh that should re-sort to the server's true
   // recency order (a fresh open); false for a refresh triggered by a
@@ -355,6 +365,35 @@ Panel {
     }
     return null
   }
+  // Task mode: what saving will do. A rename/move that lands on another
+  // task already in the list merges into it (notch edit --from-* does
+  // that on its own); say so before saving. Only the loaded recent tasks
+  // can be checked, so a merge into an older task isn't announced.
+  readonly property string editTaskHint: {
+    if (editMode !== "task" || !editTarget) return ""
+    var t = editTarget
+    var newTask = editTaskText.trim() !== "" ? editTaskText.trim() : t.task
+    var newClient = (editClientText.trim() !== "" ? editClientText.trim() : t.clientName).toLowerCase()
+    var newProject = (editProjectText.trim() !== "" ? editProjectText.trim() : t.projectName).toLowerCase()
+    for (var i = 0; i < recentTasks.length; i++) {
+      var o = recentTasks[i]
+      if (Model.taskKey(o) === Model.taskKey(t)) continue
+      if (o.task === newTask && o.projectName.toLowerCase() === newProject && o.clientName.toLowerCase() === newClient) {
+        var n = o.entryCount || 0
+        return "Merges into the existing “" + _taskName(o) + "” (" + n + (n === 1 ? " session)." : " sessions).")
+      }
+    }
+    var count = (t.entryCount || 0) + (isTaskActive(t) ? 1 : 0)
+    return count === 1 ? "Applies to its one session." : "Applies to all " + count + " sessions."
+  }
+
+  readonly property string editTitle: {
+    if (editMode === "task" && editTarget) return "Edit “" + _taskName(editTarget) + "”"
+    if (editMode === "session" && editTarget)
+      return "Edit session · " + Model.formatSessionLabel(editTarget.entry.startTime, editTarget.entry.endTime, nowMs)
+    return ""
+  }
+
   readonly property var editProjectOptions: editMatchedClient
     ? allProjects.filter(function(p) { return p.clientId === editMatchedClient.id })
     : allProjects
@@ -453,36 +492,65 @@ Panel {
     cancelQuickAdd()
   }
 
-  // Editing the *running* entry's client/project/task/notes -- "notch
-  // edit" defaults to the running entry when no --id is given. Pre-fills
-  // from the live status so e.g. re-submitting an unedited task/notes
-  // field is a no-op, not a silent clear.
+  // Shared by all three edit modes. Fields' own `text` is set
+  // imperatively here and nowhere else declaratively: a plain
+  // `text: root.editXxxText` binding on the field itself gets silently
+  // severed the moment its own onTextChanged assigns back to
+  // root.editXxxText, which happens on every keystroke -- after that, an
+  // external write (like this pre-fill, or the project field's own
+  // "picking a project also fills in its client" cross-write) would update
+  // state used at submit time without the visible field ever showing it.
+  // This bit an earlier version of the Add Timer form this replaced.
+  function _openEdit(mode, target, task, client, project, notes, start, end) {
+    quickAdding = false
+    editMode = mode
+    editTarget = target
+    editError = ""
+    editingTimer = true
+    editTaskText = task; editTaskField.text = task
+    editClientText = client; editClientField.text = client
+    editProjectText = project; editProjectField.text = project
+    editNotesText = notes; editNotesField.text = notes
+    editStartText = start; editStartField.text = start
+    editEndText = end; editEndField.text = end
+  }
+
+  // The running entry -- "notch edit" defaults to it when no --id is
+  // given. Pre-fills from the live status so re-submitting an unedited
+  // field is a no-op. Focus lands on Client, not Task: editing the running
+  // entry is almost always assigning a client/project after a quick add.
   function openEditTimer() {
     if (!running) return
-    editingTimer = true
-    editTaskText = statusTask
-    editClientText = statusClientName
-    editProjectText = statusProjectName
-    editNotesText = statusNotes
-    // Fields' own `text` is set imperatively here and nowhere else
-    // declaratively: a plain `text: root.editXxxText` binding on the field
-    // itself gets silently severed the moment its own onTextChanged
-    // assigns back to root.editXxxText, which happens on every keystroke
-    // -- after that, an external write (like this pre-fill, or the
-    // project field's own "picking a project also fills in its client"
-    // cross-write) would update state used at submit time without the
-    // visible field ever showing it. This bit an earlier version of the
-    // Add Timer form this replaced; see that bug's fix for the full story.
-    editTaskField.text = statusTask
-    editClientField.text = statusClientName
-    editProjectField.text = statusProjectName
-    editNotesField.text = statusNotes
+    _openEdit("running", null, statusTask, statusClientName, statusProjectName, statusNotes, "", "")
     // Same Qt.callLater-after-becoming-visible idiom qs.Ui's own
-    // SearchableDropdown uses to focus its search field on open. Client,
-    // not Task: the task is usually already right (it's why you're
-    // editing is almost always to assign a client/project after a quick
-    // add), so that's the field actually worth landing in.
+    // SearchableDropdown uses to focus its search field on open.
     Qt.callLater(function() { editClientField.focusField() })
+  }
+
+  // A whole task row: rename it and/or move it to another client/project,
+  // for every session at once.
+  function openEditTask(t) {
+    _openEdit("task", t, t.task, t.clientName || "", t.projectName || "", "", "", "")
+    Qt.callLater(function() { editTaskField.forceActiveFocus() })
+  }
+
+  // One session: its start/end times (same day; an end earlier than the
+  // start means it ran past midnight) and notes.
+  function openEditSession(entry, t) {
+    var startMs = Date.parse(entry.startTime)
+    var endText = entry.endTime ? Model.formatClockTime(Date.parse(entry.endTime)) : ""
+    _openEdit("session", { entry: entry, task: t }, "", "", "", entry.notes || "",
+      Model.formatClockTime(startMs), endText)
+    Qt.callLater(function() { editStartField.forceActiveFocus() })
+  }
+
+  // `e`: edit whatever the cursor is on; with nothing selected, the
+  // running entry (same as clicking the hero).
+  function editAtCursor() {
+    var item = cursorItem
+    if (item && item.kind === "task") openEditTask(item.task)
+    else if (item && item.kind === "session") openEditSession(item.entry, item.task)
+    else openEditTimer()
   }
 
   function cancelEditTimer() {
@@ -492,15 +560,59 @@ Panel {
 
   function submitEditTimer() {
     if (actionProc.running) return
-    var cmd = ["notch", "edit"]
     var clientName = editClientText.trim()
     var projectName = editProjectText.trim()
     var task = editTaskText.trim()
     var notes = editNotesText.trim()
-    if (clientName) cmd.push("--client-name", clientName)
-    if (projectName) cmd.push("--project-name", projectName)
-    if (task) cmd.push("--task", task)
-    if (notes) cmd.push("--notes", notes)
+    var cmd
+
+    if (editMode === "task") {
+      var t = editTarget
+      cmd = ["notch", "edit", "--from-project", String(t.projectId), "--from-task", t.task]
+      if (task && task !== t.task) cmd.push("--task", task)
+      if (clientName) cmd.push("--client-name", clientName)
+      if (projectName) cmd.push("--project-name", projectName)
+    } else if (editMode === "session") {
+      var e = editTarget.entry
+      var origStartMs = Date.parse(e.startTime)
+      var dayMs = Model.startOfDayMs(origStartMs)
+      var startMs = Model.parseClockTime(editStartText, dayMs)
+      if (isNaN(startMs)) { editError = "Start: use a time like 9:05 AM or 14:30."; return }
+      cmd = ["notch", "edit", "--id", String(e.id)]
+      // Only send what changed: re-sending an untouched start would round
+      // it to the minute.
+      if (Model.formatClockTime(startMs) !== Model.formatClockTime(origStartMs)) {
+        cmd.push("--start", Model.toRfc3339(startMs))
+      } else {
+        startMs = origStartMs
+      }
+      if (e.endTime) {
+        var origEndMs = Date.parse(e.endTime)
+        var endMs = Model.parseClockTime(editEndText, dayMs)
+        if (isNaN(endMs)) { editError = "End: use a time like 9:40 AM or 15:10."; return }
+        if (Model.formatClockTime(endMs) === Model.formatClockTime(origEndMs)) {
+          endMs = origEndMs
+        } else {
+          // Earlier than the start: it ran past midnight into the next day.
+          if (endMs < startMs) endMs += 86400000
+          cmd.push("--end", Model.toRfc3339(endMs))
+        }
+        if (endMs < startMs) { editError = "The end is before the start."; return }
+        if (endMs > Date.now()) { editError = "The end can't be in the future."; return }
+      }
+      if (startMs > Date.now()) { editError = "The start can't be in the future."; return }
+      if (notes !== (e.notes || "")) cmd.push("--notes", notes)
+    } else {
+      cmd = ["notch", "edit"]
+      if (clientName) cmd.push("--client-name", clientName)
+      if (projectName) cmd.push("--project-name", projectName)
+      if (task) cmd.push("--task", task)
+      // Sent only when changed, and then even if empty -- an explicit
+      // --notes "" is how notch clears notes.
+      if (notes !== statusNotes) cmd.push("--notes", notes)
+    }
+
+    editError = ""
     runAction(cmd)
     editingTimer = false
     restoreListFocus()
@@ -1013,7 +1125,7 @@ Panel {
       onDeleteRequested: root.deleteAtCursor()
       onTextKey: function(t) {
         if (t === "n" || t === "N" || t === "+") root.openQuickAdd()
-        else if (t === "e" || t === "E") root.openEditTimer()
+        else if (t === "e" || t === "E") root.editAtCursor()
         else if (t === "s" || t === "S") { if (root.running) root.stopTimer() }
         else if (t === "o" || t === "O") { root.openTui(); root.close() }
       }
@@ -1222,13 +1334,10 @@ Panel {
         }
 
         // ---------- Edit form, for the running entry ----------
-        // Triggered by clicking heroLabels itself (see its own comment) --
-        // no separate toggle row here to keep out of the layout. Only
-        // reachable while running: quick-add always starts on
-        // Uncategorized/General with no task-time to lose, so there's
-        // nothing to "edit" once idle -- reassigning a *finished* entry's
-        // client/project isn't wired up here (notch edit --id would need
-        // an entry picker of its own; out of scope for this round).
+        // Opened by clicking heroLabels (the running entry) or with `e` on
+        // a task row or session -- see editMode for which fields each
+        // shows. It sits here, under the hero, rather than inline under
+        // the row, with a title saying what's being edited.
         //
         // Same card framing as the old up-front Add Timer form this
         // replaced (BorderSurface, subtle low-alpha wash -- see its own
@@ -1265,8 +1374,21 @@ Panel {
               }
             }
 
+            Text {
+              visible: root.editTitle !== ""
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.editTitle
+              color: root.bar.foreground
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.body
+              font.bold: true
+              elide: Text.ElideRight
+            }
+
             TextField {
               id: editTaskField
+              visible: root.editMode !== "session"
               width: parent.width
               placeholderText: "Task"
               foreground: root.bar.foreground
@@ -1277,6 +1399,7 @@ Panel {
 
             NameField {
               id: editClientField
+              visible: root.editMode !== "session"
               width: parent.width
               placeholderText: "Client name (or leave blank)"
               options: root.allClients
@@ -1289,6 +1412,7 @@ Panel {
 
             NameField {
               id: editProjectField
+              visible: root.editMode !== "session"
               width: parent.width
               placeholderText: "Project name (or leave blank)"
               options: root.editProjectOptions
@@ -1308,17 +1432,61 @@ Panel {
                   editClientField.text = opt.clientName
                 }
               }
-              onAdvanceRequested: editNotesField.forceActiveFocus()
+              // No notes field when editing a whole task -- save instead.
+              onAdvanceRequested: root.editMode === "task" ? root.submitEditTimer() : editNotesField.forceActiveFocus()
+            }
+
+            // Session mode: start/end on the session's own day. Hidden end
+            // for a running session -- stopping it is what ends it.
+            Row {
+              visible: root.editMode === "session"
+              width: parent.width
+              spacing: Style.space(8)
+
+              TextField {
+                id: editStartField
+                width: editEndField.visible ? (parent.width - parent.spacing) / 2 : parent.width
+                placeholderText: "Start (9:05 AM)"
+                foreground: root.bar.foreground
+                font.family: root.bar.fontFamily
+                onTextChanged: root.editStartText = text
+                onAccepted: editEndField.visible ? editEndField.forceActiveFocus() : editNotesField.forceActiveFocus()
+              }
+
+              TextField {
+                id: editEndField
+                visible: root.editMode === "session" && root.editTarget !== null && !!root.editTarget.entry.endTime
+                width: (parent.width - parent.spacing) / 2
+                placeholderText: "End (9:40 AM)"
+                foreground: root.bar.foreground
+                font.family: root.bar.fontFamily
+                onTextChanged: root.editEndText = text
+                onAccepted: editNotesField.forceActiveFocus()
+              }
             }
 
             TextField {
               id: editNotesField
+              visible: root.editMode !== "task"
               width: parent.width
               placeholderText: "Notes (optional)"
               foreground: root.bar.foreground
               font.family: root.bar.fontFamily
               onTextChanged: root.editNotesText = text
               onAccepted: root.submitEditTimer()
+            }
+
+            // Task mode: how many sessions this touches, or that it merges.
+            // Otherwise: the session-time validation message, if any.
+            Text {
+              visible: text !== ""
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.editError !== "" ? root.editError : root.editTaskHint
+              color: root.editError !== "" ? root.bar.urgent : Qt.darker(root.bar.foreground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.Wrap
             }
 
             Button {
@@ -1581,7 +1749,7 @@ Panel {
 
                   PanelToolTip {
                     visible: chevronMouse.containsMouse
-                    text: row.isExpanded ? "Hide sessions (←)" : "Show sessions (→) · Delete removes the task"
+                    text: row.isExpanded ? "Hide sessions (←)" : "Show sessions (→) · e edits · Delete removes"
                     fontFamily: root.bar.fontFamily
                   }
                 }
