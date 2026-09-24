@@ -100,6 +100,8 @@ Panel {
   // deletes the running entry outright via "notch delete" -- for an
   // accidental start, where stopping would leave a stray short entry.
   property bool discardConfirmOpen: false
+  // Pointer over the hero row -- the other place Delete discards from.
+  property bool heroHovered: false
 
   readonly property bool running: statusClass === "running"
   readonly property real startTimeMs: statusStartTime !== "" ? Date.parse(statusStartTime) : 0
@@ -388,6 +390,16 @@ Panel {
   function closeDiscardConfirm() {
     discardConfirmOpen = false
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  // Delete over the running timer -- its row (hovered or arrow-selected)
+  // or the hero -- asks to discard it. Anywhere else it's a no-op: other
+  // rows aggregate a task's whole history, not one deletable entry.
+  function deleteAtCursor() {
+    if (!running) return
+    var onActiveRow = cursorActive && selectedIndex < visibleTasks.length
+      && isTaskActive(visibleTasks[selectedIndex])
+    if (onActiveRow || heroHovered) openDiscardConfirm()
   }
 
   function discardTimer() {
@@ -802,11 +814,16 @@ Panel {
         else
           root.heroAction()
       }
+      // Delete (or x, PanelKeyCatcher's own delete key) discards whatever
+      // the pointer/cursor is on -- which only means anything for the
+      // running timer; see deleteAtCursor(). PanelKeyCatcher has no
+      // Delete binding, so that key arrives here as its "\u007f" text.
+      onDeleteRequested: root.deleteAtCursor()
       onTextKey: function(t) {
+        if (t === "\u007f") { root.deleteAtCursor(); return }
         if (t === "n" || t === "N" || t === "+") root.openQuickAdd()
         else if (t === "e" || t === "E") root.openEditTimer()
         else if (t === "s" || t === "S") { if (root.running) root.stopTimer() }
-        else if (t === "d" || t === "D") root.openDiscardConfirm()
         else if (t === "o" || t === "O") { root.openTui(); root.close() }
       }
 
@@ -825,6 +842,12 @@ Panel {
         Item {
           width: parent.width
           implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, heroTime.implicitHeight)
+
+          // HoverHandler, not a MouseArea: observes without stealing the
+          // clicks heroIcon/heroLabelsMouse handle themselves.
+          HoverHandler {
+            onHoveredChanged: root.heroHovered = hovered
+          }
 
           // A large clickable stop button while running (not just an
           // icon) -- same md-stop glyph and "stop, not pause" reasoning
@@ -862,7 +885,7 @@ Panel {
             id: heroLabelsArea
             anchors.left: heroIcon.right
             anchors.leftMargin: Style.space(14)
-            anchors.right: discardButton.visible ? discardButton.left : heroTime.left
+            anchors.right: heroTime.left
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             implicitHeight: heroLabels.implicitHeight
@@ -916,27 +939,10 @@ Panel {
 
               PanelToolTip {
                 visible: root.running && !root.editingTimer && heroLabelsMouse.containsMouse
-                text: "Click to edit client / project / notes"
+                text: "Click to edit · Delete to discard"
                 fontFamily: root.bar.fontFamily
               }
             }
-          }
-
-          // Discard, beside the clock it would throw away. Only while
-          // running; it takes horizontal room from the labels (which
-          // elide), never vertical, so nothing below shifts.
-          PanelActionButton {
-            id: discardButton
-            visible: root.running
-            iconText: "󰩹"
-            fontFamily: root.bar.fontFamily
-            foreground: root.bar.foreground
-            hoverColor: root.bar.urgent
-            tooltipText: "Discard timer (d)"
-            anchors.right: heroTime.left
-            anchors.rightMargin: Style.space(8)
-            anchors.verticalCenter: parent.verticalCenter
-            onClicked: root.openDiscardConfirm()
           }
 
           Text {
