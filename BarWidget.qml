@@ -545,6 +545,11 @@ Panel {
     // simply appears/disappears next to a icon that never itself moves. No
     // MouseArea of its own: falls through to WidgetButton's onPressed
     // above, which opens the popout.
+    //
+    // Sized and rendered like WidgetButton's own built-in label (which the
+    // clock widget uses for its time), not at Style.bar.iconFont: that
+    // token is for icon glyphs, and digits at it read visibly larger than
+    // the clock's digits sitting a few widgets over on the same bar.
     Text {
       id: timeText
       visible: root.running
@@ -552,7 +557,8 @@ Panel {
       text: root.heroTimeText
       color: button.foreground
       font.family: button.fontFamily
-      font.pixelSize: Style.bar.iconFont
+      font.pixelSize: button.fontSize
+      renderType: Text.NativeRendering
       anchors.left: iconBox.right
       anchors.leftMargin: Style.space(6)
       anchors.verticalCenter: parent.verticalCenter
