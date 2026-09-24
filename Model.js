@@ -124,6 +124,74 @@ function startOfWeekMs(nowMs) {
   return d.getTime()
 }
 
+// Identity of one recent-timers row: notch groups entries by exact
+// (project, task), so that pair is the key everywhere -- pinning, stable
+// ordering, and which row is expanded. NUL can't appear in either part.
+function taskKey(t) {
+  return t.projectId + "\u0000" + t.task
+}
+
+// "notch entries -json" -- one task's sessions, newest first.
+function parseEntries(raw) {
+  if (!raw) return []
+  try {
+    var parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(function(e) {
+      return e && typeof e.id === "number" && typeof e.startTime === "string"
+    })
+  } catch (e) {
+    return []
+  }
+}
+
+var _weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+var _months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+function _clock(d) {
+  var h = d.getHours() % 12 || 12
+  var m = d.getMinutes()
+  return h + ":" + (m < 10 ? "0" : "") + m
+}
+
+function _meridiem(d) {
+  return d.getHours() < 12 ? "AM" : "PM"
+}
+
+// A session's "when": "Today 9:00–9:40 AM", "Yesterday 4:50 PM–12:10 AM",
+// "Mon Sep 22 9:00–9:40 AM", or "Today 9:00 AM–now" while running. The
+// meridiem is written once when both ends share it.
+function formatSessionLabel(startIso, endIso, nowMs) {
+  var start = new Date(startIso)
+  if (isNaN(start.getTime())) return ""
+  var dayMs = startOfDayMs(start.getTime())
+  var todayMs = startOfDayMs(nowMs)
+  var day
+  if (dayMs === todayMs) day = "Today"
+  else if (dayMs === startOfDayMs(todayMs - 1)) day = "Yesterday"
+  else day = _weekdays[start.getDay()] + " " + _months[start.getMonth()] + " " + start.getDate()
+
+  if (!endIso) return day + " " + _clock(start) + " " + _meridiem(start) + "–now"
+  var end = new Date(endIso)
+  if (isNaN(end.getTime())) return day + " " + _clock(start) + " " + _meridiem(start)
+  if (_meridiem(start) === _meridiem(end))
+    return day + " " + _clock(start) + "–" + _clock(end) + " " + _meridiem(end)
+  return day + " " + _clock(start) + " " + _meridiem(start) + "–" + _clock(end) + " " + _meridiem(end)
+}
+
+// A task row's billing summary from "tasks -json"'s counts: "" when none
+// is invoiced, "paid"/"invoiced" when all are, else "2/3 invoiced" (paid
+// counts as invoiced -- notch only allows paid on an invoiced entry).
+function billingLabel(t) {
+  var n = t.entryCount || 0
+  var inv = t.invoicedCount || 0
+  var paid = t.paidCount || 0
+  if (n === 0 || inv === 0) return ""
+  if (paid === n) return "paid"
+  if (inv === n) return "invoiced"
+  return inv + "/" + n + " invoiced"
+}
+
 // Re-applies a fresh "notch tasks -json" response onto the currently
 // displayed row order instead of just replacing it outright. The server
 // always sorts by most-recent-use, so a plain replace reshuffles the whole
@@ -138,7 +206,7 @@ function startOfWeekMs(nowMs) {
 // list instead (a real re-sort) when the popout freshly opens, so it's
 // still accurate whenever you deliberately go look at it.
 function reorderTasksInPlace(previous, incoming) {
-  var key = function(t) { return t.projectId + "\u0000" + t.task }
+  var key = taskKey
   var incomingByKey = {}
   for (var i = 0; i < incoming.length; i++) incomingByKey[key(incoming[i])] = incoming[i]
 

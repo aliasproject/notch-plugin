@@ -96,12 +96,27 @@ Panel {
   // Quick-add's typed text, mirrored out of quickAddField so visibleTasks
   // can filter the list on it -- see Model.filterTasks.
   property string quickAddQuery: ""
-  // "Discard timer" confirmation (ConfirmDialog over the popout). Discard
-  // deletes the running entry outright via "notch delete" -- for an
-  // accidental start, where stopping would leave a stray short entry.
-  property bool discardConfirmOpen: false
-  // Pointer over the hero row -- the other place Delete discards from.
+  // The one delete confirmation (ConfirmDialog over the popout), for
+  // whichever of the three delete targets asked: a whole task row, one
+  // session, or -- from the hero -- the running entry. null when closed;
+  // otherwise {message, confirmText, cmd}, cmd being the notch delete call
+  // to run once confirmed.
+  property var pendingDelete: null
+  readonly property bool deleteConfirmOpen: pendingDelete !== null
+  // Pointer over the hero row -- Delete there discards the running entry.
   property bool heroHovered: false
+
+  // Which task row is expanded to show its sessions (Model.taskKey; ""
+  // for none). One at a time, so the list never grows by more than one
+  // task's worth. expandedTask is the row's own data, kept for the
+  // "notch entries" call; sessions is that call's parsed result.
+  property string expandedKey: ""
+  property var expandedTask: null
+  property var sessions: []
+  // Guards against a sessions reply for a row that's since been
+  // collapsed or swapped for another landing on the wrong one.
+  property string sessionsRequestKey: ""
+  property bool sessionsRefreshPending: false
 
   readonly property bool running: statusClass === "running"
   readonly property real startTimeMs: statusStartTime !== "" ? Date.parse(statusStartTime) : 0
@@ -155,13 +170,13 @@ Panel {
   // that's actually correct, not just incidental churn. Everything *else*
   // in the list still keeps its stable order.
   readonly property var displayedTasks: {
-    var pinKey = running ? (statusProjectId + " " + statusTask) : lastActiveKey
+    var pinKey = running ? Model.taskKey({ projectId: statusProjectId, task: statusTask }) : lastActiveKey
     if (pinKey === "") return recentTasks
     var pinnedEntry = null
     var rest = []
     for (var i = 0; i < recentTasks.length; i++) {
       var t = recentTasks[i]
-      if (!pinnedEntry && (t.projectId + " " + t.task) === pinKey) pinnedEntry = t
+      if (!pinnedEntry && Model.taskKey(t) === pinKey) pinnedEntry = t
       else rest.push(t)
     }
     if (!pinnedEntry) {
@@ -185,10 +200,29 @@ Panel {
     ? Model.filterTasks(displayedTasks, quickAddQuery)
     : displayedTasks
 
-  onVisibleTasksChanged: {
-    if (selectedIndex > visibleTasks.length - 1) selectedIndex = Math.max(0, visibleTasks.length - 1)
-    if (visibleTasks.length === 0) cursorActive = false
+  // What the Repeater and keyboard cursor actually walk: every visible
+  // task as {kind: "task"}, with the expanded one followed by its sessions
+  // as {kind: "session"}. Quick add never shows sessions -- its cursor is
+  // for picking a task to restart.
+  readonly property var visibleItems: {
+    var out = []
+    for (var i = 0; i < visibleTasks.length; i++) {
+      var t = visibleTasks[i]
+      out.push({ kind: "task", task: t })
+      if (!quickAdding && expandedKey !== "" && Model.taskKey(t) === expandedKey) {
+        for (var j = 0; j < sessions.length; j++) out.push({ kind: "session", entry: sessions[j], task: t })
+      }
+    }
+    return out
   }
+
+  onVisibleItemsChanged: {
+    if (selectedIndex > visibleItems.length - 1) selectedIndex = Math.max(0, visibleItems.length - 1)
+    if (visibleItems.length === 0) cursorActive = false
+  }
+
+  readonly property var cursorItem: cursorActive && selectedIndex < visibleItems.length
+    ? visibleItems[selectedIndex] : null
 
   function isTaskActive(t) {
     return running && t.projectId === statusProjectId && t.task === statusTask
@@ -209,14 +243,72 @@ Panel {
   }
 
   function moveCursor(dy) {
-    if (visibleTasks.length === 0) return
+    if (visibleItems.length === 0) return
     if (!cursorActive) {
       cursorActive = true
-      selectedIndex = dy < 0 ? visibleTasks.length - 1 : 0
+      selectedIndex = dy < 0 ? visibleItems.length - 1 : 0
       return
     }
-    selectedIndex = Math.max(0, Math.min(visibleTasks.length - 1, selectedIndex + dy))
+    selectedIndex = Math.max(0, Math.min(visibleItems.length - 1, selectedIndex + dy))
   }
+
+  // Enter/Space/click on an item: tasks start or stop; sessions aren't
+  // resumable on their own, so they do nothing.
+  function activateItem(item) {
+    if (item && item.kind === "task") toggleTask(item.task)
+  }
+
+  // → expands the task under the cursor; ← collapses, from the task or
+  // from any of its sessions (moving the cursor back up to the task).
+  function expandAtCursor(dx) {
+    var item = cursorItem
+    if (!item) return
+    var key = Model.taskKey(item.task)
+    if (dx > 0) {
+      if (item.kind === "task" && expandedKey !== key) expandTask(item.task)
+    } else if (expandedKey === key) {
+      if (item.kind === "session") {
+        for (var i = 0; i < visibleItems.length; i++) {
+          if (visibleItems[i].kind === "task" && Model.taskKey(visibleItems[i].task) === key) {
+            selectedIndex = i
+            break
+          }
+        }
+      }
+      collapseTask()
+    }
+  }
+
+  function expandTask(t) {
+    expandedKey = Model.taskKey(t)
+    expandedTask = t
+    sessions = []
+    refreshSessions()
+  }
+
+  function collapseTask() {
+    expandedKey = ""
+    expandedTask = null
+    sessions = []
+  }
+
+  function toggleExpand(t) {
+    if (expandedKey === Model.taskKey(t)) collapseTask()
+    else expandTask(t)
+  }
+
+  function refreshSessions() {
+    if (!expandedTask) return
+    if (entriesProc.running) {
+      sessionsRefreshPending = true
+      return
+    }
+    sessionsRequestKey = expandedKey
+    entriesProc.command = ["notch", "entries", "-json", "--project", String(expandedTask.projectId),
+      "--task", expandedTask.task, "--limit", "20"]
+    entriesProc.running = true
+  }
+
 
   // Edit form's project field suggestion pool, narrowed to whichever
   // client is currently typed IF it exactly (case-insensitively) matches
@@ -295,6 +387,7 @@ Panel {
     quickAddField.text = ""
     quickAddQuery = ""
     cursorActive = false
+    collapseTask()
     Qt.callLater(function() { quickAddField.forceActiveFocus() })
   }
 
@@ -308,8 +401,8 @@ Panel {
   // existing task (client/project and all); otherwise the typed text
   // starts a new one on Uncategorized, as before.
   function submitQuickAdd() {
-    if (cursorActive && selectedIndex < visibleTasks.length) {
-      var picked = visibleTasks[selectedIndex]
+    if (cursorItem && cursorItem.kind === "task") {
+      var picked = cursorItem.task
       cancelQuickAdd()
       toggleTask(picked)
       return
@@ -376,35 +469,64 @@ Panel {
   }
 
   // Cancel is pre-selected (the clipboard plugin's clear-history confirm
-  // defaults to its destructive button; this deletes tracked time, so a
+  // defaults to its destructive button; these delete tracked time, so a
   // reflexive Enter shouldn't be what does it).
-  function openDiscardConfirm() {
-    if (!running) return
+  function openDeleteConfirm(message, confirmText, cmd) {
     quickAdding = false
     editingTimer = false
-    discardConfirm.selectedIndex = 0
-    discardConfirmOpen = true
-    Qt.callLater(function() { discardKeys.forceActiveFocus() })
+    deleteConfirm.selectedIndex = 0
+    pendingDelete = { message: message, confirmText: confirmText, cmd: cmd }
+    Qt.callLater(function() { deleteKeys.forceActiveFocus() })
   }
 
-  function closeDiscardConfirm() {
-    discardConfirmOpen = false
+  function closeDeleteConfirm() {
+    pendingDelete = null
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
-  // Delete over the running timer -- its row (hovered or arrow-selected)
-  // or the hero -- asks to discard it. Anywhere else it's a no-op: other
-  // rows aggregate a task's whole history, not one deletable entry.
-  function deleteAtCursor() {
-    if (!running) return
-    var onActiveRow = cursorActive && selectedIndex < visibleTasks.length
-      && isTaskActive(visibleTasks[selectedIndex])
-    if (onActiveRow || heroHovered) openDiscardConfirm()
+  function confirmDelete() {
+    var cmd = pendingDelete ? pendingDelete.cmd : null
+    closeDeleteConfirm()
+    if (cmd) runAction(cmd)
   }
 
-  function discardTimer() {
-    closeDiscardConfirm()
-    if (running) runAction(["notch", "delete"])
+  function _taskName(t) {
+    return t.task !== "" ? t.task : t.projectName
+  }
+
+  // Delete key: acts on whatever the cursor (hover or arrows) is on -- a
+  // whole task row, or one session of an expanded row -- else, with the
+  // pointer over the hero, discards the running entry.
+  function deleteAtCursor() {
+    var item = cursorItem
+    if (item && item.kind === "task") {
+      var t = item.task
+      var active = isTaskActive(t)
+      // tasks -json counts finished entries only; the running one is extra.
+      var count = (t.entryCount || 0) + (active ? 1 : 0)
+      var total = Model.formatSeconds((t.totalSeconds || 0) + (active ? elapsedSeconds : 0))
+      var msg = count > 1
+        ? "Delete “" + _taskName(t) + "” and all " + count + " of its sessions (" + total + ")?"
+        : "Delete “" + _taskName(t) + "” (" + total + ")?"
+      var inv = t.invoicedCount || 0
+      var paid = t.paidCount || 0
+      if (inv > 0) msg += " " + (inv === 1 ? "1 is invoiced" : inv + " are invoiced") + (paid > 0 ? " (" + paid + " paid)." : ".")
+      if (active) msg += " Includes the running timer."
+      openDeleteConfirm(msg, "Delete", ["notch", "delete", "--project", String(t.projectId), "--task", t.task])
+    } else if (item && item.kind === "session") {
+      var e = item.entry
+      var sessionRunning = !e.endTime
+      var secs = sessionRunning ? elapsedSeconds : (e.durationSeconds || 0)
+      var smsg = "Delete the " + Model.formatSessionLabel(e.startTime, e.endTime, nowMs)
+        + " session of “" + _taskName(item.task) + "” (" + Model.formatSeconds(secs) + ")?"
+      if (e.paid) smsg += " It's been paid."
+      else if (e.invoiced) smsg += " It's invoiced."
+      if (sessionRunning) smsg += " This is the running timer."
+      openDeleteConfirm(smsg, "Delete", ["notch", "delete", "--id", String(e.id)])
+    } else if (heroHovered && running) {
+      openDeleteConfirm("Discard “" + (statusTask !== "" ? statusTask : statusProjectName) + "”? "
+        + heroTimeText + " of tracked time will be deleted.", "Discard", ["notch", "delete"])
+    }
   }
 
   // Floating terminal running the full TUI, for anything beyond a quick
@@ -428,7 +550,8 @@ Panel {
   } else {
     cancelQuickAdd()
     editingTimer = false
-    discardConfirmOpen = false
+    pendingDelete = null
+    collapseTask()
   }
 
   Process {
@@ -448,7 +571,7 @@ Panel {
         root.statusProjectId = parsed.projectId
         root.statusProjectName = parsed.projectName
         root.statusClientName = parsed.clientName
-        if (parsed.class === "running") root.lastActiveKey = parsed.projectId + " " + parsed.task
+        if (parsed.class === "running") root.lastActiveKey = Model.taskKey(parsed)
         root.nowMs = Date.now()
         // Only after status has actually landed -- see
         // tasksRefreshPending's own comment for why this can't just be a
@@ -473,6 +596,14 @@ Panel {
           ? incoming
           : Model.reorderTasksInPlace(root.recentTasks, incoming)
         root.tasksNeedFreshSort = false
+        // The expanded row's sessions may have changed too (a delete, a
+        // start/stop, an edit in the TUI); collapse it if the task itself
+        // is gone, e.g. after deleting the whole task.
+        if (root.expandedKey !== "") {
+          var stillThere = root.displayedTasks.some(function(t) { return Model.taskKey(t) === root.expandedKey })
+          if (stillThere) root.refreshSessions()
+          else root.collapseTask()
+        }
       }
     }
   }
@@ -498,6 +629,25 @@ Panel {
           root.summaryTodaySeconds = parsed.todaySeconds
           root.summaryWeekSeconds = parsed.weekSeconds
         }
+      }
+    }
+  }
+
+  Process {
+    id: entriesProc
+    onExited: {
+      if (root.sessionsRefreshPending) {
+        root.sessionsRefreshPending = false
+        Qt.callLater(root.refreshSessions)
+      }
+    }
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (root.sessionsRequestKey !== root.expandedKey) return
+        var parsed = Model.parseEntries(text)
+        if (parsed.length === 0) root.collapseTask()
+        else root.sessions = parsed
       }
     }
   }
@@ -801,23 +951,23 @@ Panel {
       // just per-field, since a focused Save/Start button needs
       // Return/Space to reach its own Keys.onReturnPressed too, not just
       // the text fields.
-      blocked: root.quickAdding || root.editingTimer || root.discardConfirmOpen
+      blocked: root.quickAdding || root.editingTimer || root.deleteConfirmOpen
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveCursor(dy) }
+      onMoveRequested: function(dx, dy) {
+        if (dy !== 0) root.moveCursor(dy)
+        else if (dx !== 0) root.expandAtCursor(dx)
+      }
       // Enter/Space on a selected row toggles that row; with nothing
       // selected they act on the hero instead (stop, or resume the last
       // task), so "open popout, Space" is a one-key stop/resume.
       onActivateRequested: {
-        if (root.cursorActive && root.selectedIndex < root.visibleTasks.length)
-          root.toggleTask(root.visibleTasks[root.selectedIndex])
-        else
-          root.heroAction()
+        if (root.cursorItem) root.activateItem(root.cursorItem)
+        else root.heroAction()
       }
-      // Delete (or x, PanelKeyCatcher's own delete key) discards whatever
-      // the pointer/cursor is on -- which only means anything for the
-      // running timer; see deleteAtCursor(). PanelKeyCatcher has no
-      // Delete binding, so that key arrives here as its "\u007f" text.
+      // Delete (or x, PanelKeyCatcher's own delete key) deletes whatever
+      // the pointer/cursor is on -- see deleteAtCursor(). PanelKeyCatcher
+      // has no Delete binding, so that key arrives here as "\u007f" text.
       onDeleteRequested: root.deleteAtCursor()
       onTextKey: function(t) {
         if (t === "\u007f") { root.deleteAtCursor(); return }
@@ -1251,33 +1401,49 @@ Panel {
           // fills reuse Style's own token functions (the same ones
           // Button.qml uses internally) so the look still matches the rest
           // of the kit without Button's single-line layout.
+          //
+          // One delegate for both item kinds (see visibleItems): a task row,
+          // or -- under the expanded task -- one of its sessions, indented
+          // to the label column. Not a Loader over two components: Loader
+          // can't pass required properties through to what it loads.
           Repeater {
-            model: root.visibleTasks
+            model: root.visibleItems
             Item {
               id: row
               required property var modelData
               required property int index
-              readonly property bool isActive: root.isTaskActive(modelData)
+              readonly property bool isSession: modelData.kind === "session"
+              readonly property var task: modelData.task
+              readonly property var entry: isSession ? modelData.entry : null
+              readonly property bool isActive: !isSession && root.isTaskActive(task)
+              readonly property bool isExpanded: !isSession && root.expandedKey === Model.taskKey(task)
               readonly property bool rowSelected: root.cursorActive && root.selectedIndex === index
-              readonly property int displaySeconds: (modelData.totalSeconds || 0) + (isActive ? root.elapsedSeconds : 0)
-              readonly property string primaryLabel: modelData.task !== "" ? modelData.task : modelData.projectName
+              readonly property int displaySeconds: (task.totalSeconds || 0) + (isActive ? root.elapsedSeconds : 0)
+              readonly property string primaryLabel: task.task !== "" ? task.task : task.projectName
               // Client › Project, matching notch's own tooltip breadcrumb
               // convention (internal/status.FormatJSON: "%s › %s\n%s" =
               // client, project, task) -- same order the hero above uses,
               // rather than a third, invented order for this row.
-              readonly property string secondaryLabel: modelData.task !== ""
-                ? ((modelData.clientName ? modelData.clientName + " › " : "") + modelData.projectName)
-                : modelData.clientName
+              readonly property string secondaryLabel: task.task !== ""
+                ? ((task.clientName ? task.clientName + " › " : "") + task.projectName)
+                : task.clientName
+              readonly property string billing: isSession ? "" : Model.billingLabel(task)
+
+              readonly property bool sessionRunning: isSession && !entry.endTime
+              readonly property int sessionSeconds: !isSession ? 0
+                : (sessionRunning ? root.elapsedSeconds : (entry.durationSeconds || 0))
 
               width: parent.width
-              height: labels.implicitHeight + Style.space(16)
+              height: isSession
+                ? sessionLabel.implicitHeight + Style.space(10)
+                : labels.implicitHeight + Style.space(16)
 
               MouseArea {
                 id: rowMouse
                 anchors.fill: parent
                 hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.toggleTask(row.modelData)
+                cursorShape: row.isSession ? Qt.ArrowCursor : Qt.PointingHandCursor
+                onClicked: root.activateItem(row.modelData)
                 // Hover moves the one shared cursor (CursorSurface's
                 // contract: a single highlight across mouse and keyboard).
                 // Not while quick-adding, though -- there the cursor is
@@ -1292,10 +1458,13 @@ Panel {
 
               CursorSurface {
                 anchors.fill: parent
+                anchors.leftMargin: row.isSession ? Style.space(10) + Style.bar.iconCanvas : 0
                 hasCursor: row.rowSelected
-                current: row.isActive
+                current: row.isActive || row.sessionRunning
                 foreground: root.bar.foreground
               }
+
+              // ----- task row -----
 
               // Fixed-size box, not a plain Text sized to its own glyph:
               // "▶"/"⚡" (still-different-width, same issue the bar icon
@@ -1307,6 +1476,7 @@ Panel {
               // of which two glyphs are swapped in.
               Item {
                 id: rowIcon
+                visible: !row.isSession
                 width: Style.bar.iconCanvas
                 height: Style.bar.iconCanvas
                 anchors.left: parent.left
@@ -1322,20 +1492,58 @@ Panel {
                 }
               }
 
+              // Expand/collapse the row's sessions -- its own click target,
+              // so clicking the rest of the row still starts/stops.
+              Item {
+                id: chevron
+                visible: !row.isSession
+                width: Style.bar.iconCanvas
+                height: Style.bar.iconCanvas
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(6)
+                anchors.verticalCenter: parent.verticalCenter
+
+                OpticalGlyph {
+                  anchors.fill: parent
+                  text: row.isExpanded ? "󰅀" : "󰅂"
+                  fontFamily: root.bar.fontFamily
+                  fontSize: Style.bar.iconFont
+                  color: chevronMouse.containsMouse || row.isExpanded
+                    ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.4)
+                }
+
+                MouseArea {
+                  id: chevronMouse
+                  anchors.fill: parent
+                  enabled: !row.isSession && !root.quickAdding
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.toggleExpand(row.task)
+
+                  PanelToolTip {
+                    visible: chevronMouse.containsMouse
+                    text: row.isExpanded ? "Hide sessions (←)" : "Show sessions (→) · Delete removes the task"
+                    fontFamily: root.bar.fontFamily
+                  }
+                }
+              }
+
               Text {
                 id: rowTime
+                visible: !row.isSession
                 textFormat: Text.PlainText
                 text: Model.formatSeconds(row.displaySeconds)
                 color: row.isActive ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.4)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.bodySmall
-                anchors.right: parent.right
-                anchors.rightMargin: Style.space(10)
+                anchors.right: chevron.left
+                anchors.rightMargin: Style.space(4)
                 anchors.verticalCenter: parent.verticalCenter
               }
 
               Column {
                 id: labels
+                visible: !row.isSession
                 anchors.left: rowIcon.right
                 anchors.leftMargin: Style.space(10)
                 anchors.right: rowTime.left
@@ -1354,16 +1562,86 @@ Panel {
                   width: parent.width
                 }
 
-                Text {
-                  textFormat: Text.PlainText
-                  visible: row.secondaryLabel !== ""
-                  text: row.secondaryLabel
-                  color: Qt.darker(root.bar.foreground, 1.4)
-                  font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
+                // Client › project elides first; the billing status after
+                // it always stays readable.
+                Item {
+                  visible: row.secondaryLabel !== "" || row.billing !== ""
                   width: parent.width
+                  height: Math.max(secondaryText.implicitHeight, billingText.implicitHeight)
+
+                  Text {
+                    id: secondaryText
+                    textFormat: Text.PlainText
+                    text: row.secondaryLabel
+                    color: Qt.darker(root.bar.foreground, 1.4)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    elide: Text.ElideRight
+                    anchors.left: parent.left
+                    width: Math.min(implicitWidth, parent.width - (billingText.visible ? billingText.implicitWidth : 0))
+                  }
+
+                  Text {
+                    id: billingText
+                    visible: row.billing !== ""
+                    textFormat: Text.PlainText
+                    text: (row.secondaryLabel !== "" ? " · " : "") + row.billing
+                    // Paid in the accent, invoiced dim -- the TUI's own
+                    // badge weighting.
+                    color: row.billing === "paid" ? Color.accent : Qt.darker(root.bar.foreground, 1.4)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    anchors.left: secondaryText.right
+                  }
                 }
+              }
+
+              // ----- session row -----
+
+              Text {
+                id: sessionTime
+                visible: row.isSession
+                textFormat: Text.PlainText
+                text: Model.formatSeconds(row.sessionSeconds)
+                color: row.sessionRunning ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.4)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(6) + Style.bar.iconCanvas + Style.space(4)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              // PAID wins over INVOICED: notch only allows paid on an
+              // invoiced entry, so both flags set just means paid.
+              Text {
+                id: sessionBadge
+                visible: row.isSession && (row.entry.paid || row.entry.invoiced)
+                textFormat: Text.PlainText
+                text: row.isSession && row.entry.paid ? "PAID" : "INVOICED"
+                color: row.isSession && row.entry.paid ? Color.accent : Qt.darker(root.bar.foreground, 1.4)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1.2
+                anchors.right: sessionTime.left
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Text {
+                id: sessionLabel
+                visible: row.isSession
+                textFormat: Text.PlainText
+                text: row.isSession ? Model.formatSessionLabel(row.entry.startTime, row.entry.endTime, root.nowMs) : ""
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                elide: Text.ElideRight
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(10) + Style.bar.iconCanvas + Style.space(10)
+                anchors.right: sessionBadge.visible ? sessionBadge.left : sessionTime.left
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
               }
             }
           }
@@ -1384,24 +1662,23 @@ Panel {
       // and hands keys to ConfirmDialog's own handler: Left/Right/Tab
       // switch buttons, Enter picks, Escape cancels.
       Item {
-        id: discardKeys
+        id: deleteKeys
         Keys.onPressed: function(event) {
-          if (discardConfirm.handleKey(event)) event.accepted = true
+          if (deleteConfirm.handleKey(event)) event.accepted = true
         }
       }
 
       ConfirmDialog {
-        id: discardConfirm
+        id: deleteConfirm
         anchors.fill: parent
         z: 10
-        opened: root.discardConfirmOpen
-        message: "Discard “" + (root.statusTask !== "" ? root.statusTask : root.statusProjectName) + "”? "
-          + root.heroTimeText + " of tracked time will be deleted."
-        confirmText: "Discard"
+        opened: root.deleteConfirmOpen
+        message: root.pendingDelete ? root.pendingDelete.message : ""
+        confirmText: root.pendingDelete ? root.pendingDelete.confirmText : "Delete"
         foreground: root.bar.foreground
         fontFamily: root.bar.fontFamily
-        onCanceled: root.closeDiscardConfirm()
-        onConfirmed: root.discardTimer()
+        onCanceled: root.closeDeleteConfirm()
+        onConfirmed: root.confirmDelete()
       }
     }
   }
