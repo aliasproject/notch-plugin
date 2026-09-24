@@ -427,6 +427,14 @@ Panel {
     quickAdding = false
     quickAddQuery = ""
     cursorActive = false
+    restoreListFocus()
+  }
+
+  // Back to listKeys after an inline editor or the confirm closes -- the
+  // hidden field would otherwise keep focus, and Delete/Backspace (plus
+  // everything keyCatcher handles) would stop reaching the list.
+  function restoreListFocus() {
+    Qt.callLater(function() { if (root.opened) listKeys.forceActiveFocus() })
   }
 
   // Enter in quick add: a row picked with the arrow keys restarts that
@@ -479,6 +487,7 @@ Panel {
 
   function cancelEditTimer() {
     editingTimer = false
+    restoreListFocus()
   }
 
   function submitEditTimer() {
@@ -494,6 +503,7 @@ Panel {
     if (notes) cmd.push("--notes", notes)
     runAction(cmd)
     editingTimer = false
+    restoreListFocus()
   }
 
   function stopTimer() {
@@ -513,7 +523,7 @@ Panel {
 
   function closeDeleteConfirm() {
     pendingDelete = null
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    restoreListFocus()
   }
 
   function confirmDelete() {
@@ -960,7 +970,7 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    focusTarget: keyCatcher
+    focusTarget: listKeys
     // 380, matching every other standard popout (audio/monitor/bluetooth/
     // power/network/agents all use the same Style.space(380); clock/weather
     // are the only first-party outliers, each for its own wider content).
@@ -998,14 +1008,31 @@ Panel {
         if (root.cursorItem) root.activateItem(root.cursorItem)
         else root.heroAction()
       }
-      // x is PanelKeyCatcher's own delete key; the Delete key itself is
-      // the Shortcut below (it carries no text, so textKey never sees it).
+      // x is PanelKeyCatcher's own delete key; Delete/Backspace are caught
+      // by listKeys, below (they carry no text, so textKey never sees them).
       onDeleteRequested: root.deleteAtCursor()
       onTextKey: function(t) {
         if (t === "n" || t === "N" || t === "+") root.openQuickAdd()
         else if (t === "e" || t === "E") root.openEditTimer()
         else if (t === "s" || t === "S") { if (root.running) root.stopTimer() }
         else if (t === "o" || t === "O") { root.openTui(); root.close() }
+      }
+
+      // Holds the popout's keyboard focus (KeyboardPanel.focusTarget) so it
+      // sees keys before keyCatcher: Delete, and Backspace (what the
+      // "delete" key sends on Mac-style keyboards), delete whatever the
+      // pointer/cursor is on -- see deleteAtCursor(). Anything else is left
+      // unaccepted and propagates up to keyCatcher as usual. Same shape as
+      // the clipboard plugin's own focused key-catcher Item.
+      Item {
+        id: listKeys
+        focus: true
+        Keys.onPressed: function(event) {
+          if ((event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) && !keyCatcher.blocked) {
+            root.deleteAtCursor()
+            event.accepted = true
+          }
+        }
       }
 
       Column {
@@ -1688,17 +1715,6 @@ Panel {
           bordered: true
           onClicked: root.openTui()
         }
-      }
-
-      // Delete deletes whatever the pointer/cursor is on -- see
-      // deleteAtCursor(). A window-level Shortcut rather than a Keys
-      // handler, so it works no matter which item in the popout has focus;
-      // off while a text field or the confirm is up, so Delete edits text
-      // there as usual.
-      Shortcut {
-        sequence: "Delete"
-        enabled: root.opened && !root.quickAdding && !root.editingTimer && !root.deleteConfirmOpen
-        onActivated: root.deleteAtCursor()
       }
 
       // Holds focus while the confirm is open (keyCatcher is blocked then)
