@@ -72,6 +72,31 @@ Panel {
   // something from a previous visit once the popout's been closed.
   property string lastActiveKey: ""
 
+  // "notch summary -json" -- finished-entry totals only; the running
+  // entry's share is added live below (todaySeconds/weekSeconds).
+  // summaryAvailable stays false on a notch that predates the command, and
+  // the totals row stays hidden instead of claiming 0:00:00.
+  property bool summaryAvailable: false
+  property int summaryTodaySeconds: 0
+  property int summaryWeekSeconds: 0
+
+  // false once "notch status" has exited non-zero (missing binary, broken
+  // DB) -- the hero says so instead of looking like a plain idle state.
+  property bool notchAvailable: true
+  // Last failed start/stop/edit's stderr, shown under the hero until the
+  // next action or errorClearTimer. Those calls used to fail silently.
+  property string lastError: ""
+
+  // Keyboard cursor over visibleTasks, the same cursorActive/selectedIndex
+  // shape the first-party bluetooth panel uses: nothing is highlighted
+  // until the first arrow/j/k press (or a hover), so opening the popout
+  // doesn't paint a stray highlight on row 0.
+  property bool cursorActive: false
+  property int selectedIndex: 0
+  // Quick-add's typed text, mirrored out of quickAddField so visibleTasks
+  // can filter the list on it -- see Model.filterTasks.
+  property string quickAddQuery: ""
+
   readonly property bool running: statusClass === "running"
   readonly property real startTimeMs: statusStartTime !== "" ? Date.parse(statusStartTime) : 0
   readonly property int elapsedSeconds: running && startTimeMs > 0
@@ -79,8 +104,32 @@ Panel {
     : 0
 
   readonly property string heroTimeText: Model.formatSeconds(elapsedSeconds)
-  readonly property string heroTaskText: running ? statusTask : "No timer running"
-  readonly property string heroMetaText: running ? (statusClientName + " › " + statusProjectName) : ""
+  readonly property string heroTaskText: {
+    if (!notchAvailable) return "notch isn't responding"
+    if (running) return statusTask !== "" ? statusTask : statusProjectName
+    return "No timer running"
+  }
+  readonly property string heroMetaText: {
+    if (!notchAvailable) return "Check that notch is on your PATH"
+    if (running) return statusClientName + " › " + statusProjectName
+    if (resumeTask) return "Last: " + (resumeTask.task !== "" ? resumeTask.task : resumeTask.projectName)
+    return ""
+  }
+
+  // What the hero's play button restarts while idle: the most recent task,
+  // i.e. the top of the list (which a fresh open sorts by recency, and
+  // displayedTasks keeps pinned there after a stop).
+  readonly property var resumeTask: !running && displayedTasks.length > 0 ? displayedTasks[0] : null
+
+  // Today / this week, ticking live: summary's finished totals plus the
+  // running entry's elapsed time since each period began (clipped the
+  // same way notch's status.Summarize clips finished entries).
+  function _runningSecondsSince(periodStartMs) {
+    if (!running || startTimeMs <= 0) return 0
+    return Math.max(0, Math.floor((nowMs - Math.max(startTimeMs, periodStartMs)) / 1000))
+  }
+  readonly property int todaySeconds: summaryTodaySeconds + _runningSecondsSince(Model.startOfDayMs(nowMs))
+  readonly property int weekSeconds: summaryWeekSeconds + _runningSecondsSince(Model.startOfWeekMs(nowMs))
 
   // What the list actually renders. "notch tasks -json" only reports
   // *finished* entries (see notch's ListRecentTasks), so a task started
@@ -123,6 +172,46 @@ Panel {
     return [pinnedEntry].concat(rest)
   }
 
+  // displayedTasks narrowed by whatever's typed into quick add -- the
+  // Repeater and the keyboard cursor both index into this, never into
+  // displayedTasks directly.
+  readonly property var visibleTasks: quickAdding
+    ? Model.filterTasks(displayedTasks, quickAddQuery)
+    : displayedTasks
+
+  onVisibleTasksChanged: {
+    if (selectedIndex > visibleTasks.length - 1) selectedIndex = Math.max(0, visibleTasks.length - 1)
+    if (visibleTasks.length === 0) cursorActive = false
+  }
+
+  function isTaskActive(t) {
+    return running && t.projectId === statusProjectId && t.task === statusTask
+  }
+
+  // One row's click/Enter: stop it if it's the one running, else start it.
+  function toggleTask(t) {
+    if (!t) return
+    if (isTaskActive(t)) stopTimer()
+    else startTask(t.projectId, t.task)
+  }
+
+  // The hero button, and Space with no row selected: stop what's running,
+  // or pick the last task back up.
+  function heroAction() {
+    if (running) stopTimer()
+    else if (resumeTask) startTask(resumeTask.projectId, resumeTask.task)
+  }
+
+  function moveCursor(dy) {
+    if (visibleTasks.length === 0) return
+    if (!cursorActive) {
+      cursorActive = true
+      selectedIndex = dy < 0 ? visibleTasks.length - 1 : 0
+      return
+    }
+    selectedIndex = Math.max(0, Math.min(visibleTasks.length - 1, selectedIndex + dy))
+  }
+
   // Edit form's project field suggestion pool, narrowed to whichever
   // client is currently typed IF it exactly (case-insensitively) matches
   // an existing client -- picking a real client actually shrinks the
@@ -156,14 +245,25 @@ Panel {
     if (!clientsProc.running) clientsProc.running = true
   }
 
+  function refreshSummary() {
+    if (!summaryProc.running) summaryProc.running = true
+  }
+
+  // Every mutating call goes through here so a failure is reported the
+  // same way regardless of which button triggered it.
+  function runAction(cmd) {
+    if (actionProc.running) return
+    lastError = ""
+    actionProc.command = cmd
+    actionProc.running = true
+  }
+
   // Used by the recent-timers list, which already has a concrete project
   // ID for each row.
   function startTask(projectId, task, notes) {
-    if (actionProc.running) return
     var cmd = ["notch", "start", "--project", String(projectId), "--task", task || ""]
     if (notes) cmd.push("--notes", notes)
-    actionProc.command = cmd
-    actionProc.running = true
+    runAction(cmd)
   }
 
   // Used by the recent-timers list' quick-add row, which never specifies a
@@ -171,13 +271,11 @@ Panel {
   // catch-all (db.EnsureUncategorizedProject) when none of --project/
   // --client-name/--project-name are given at all.
   function startTaskByName(clientName, projectName, task, notes) {
-    if (actionProc.running) return
     var cmd = ["notch", "start", "--task", task || ""]
     if (clientName) cmd.push("--client-name", clientName)
     if (projectName) cmd.push("--project-name", projectName)
     if (notes) cmd.push("--notes", notes)
-    actionProc.command = cmd
-    actionProc.running = true
+    runAction(cmd)
   }
 
   // Quick add: "+" on the recent-timers list opens one inline, editable
@@ -189,18 +287,31 @@ Panel {
     // persistent binding gets silently severed by the field's own
     // onTextChanged the moment you type into it).
     quickAddField.text = ""
+    quickAddQuery = ""
+    cursorActive = false
     Qt.callLater(function() { quickAddField.forceActiveFocus() })
   }
 
   function cancelQuickAdd() {
     quickAdding = false
+    quickAddQuery = ""
+    cursorActive = false
   }
 
+  // Enter in quick add: a row picked with the arrow keys restarts that
+  // existing task (client/project and all); otherwise the typed text
+  // starts a new one on Uncategorized, as before.
   function submitQuickAdd() {
+    if (cursorActive && selectedIndex < visibleTasks.length) {
+      var picked = visibleTasks[selectedIndex]
+      cancelQuickAdd()
+      toggleTask(picked)
+      return
+    }
     var task = quickAddField.text.trim()
     if (task === "") return
     startTaskByName("", "", task, "")
-    quickAdding = false
+    cancelQuickAdd()
   }
 
   // Editing the *running* entry's client/project/task/notes -- "notch
@@ -250,15 +361,12 @@ Panel {
     if (projectName) cmd.push("--project-name", projectName)
     if (task) cmd.push("--task", task)
     if (notes) cmd.push("--notes", notes)
-    actionProc.command = cmd
-    actionProc.running = true
+    runAction(cmd)
     editingTimer = false
   }
 
   function stopTimer() {
-    if (actionProc.running) return
-    actionProc.command = ["notch", "stop"]
-    actionProc.running = true
+    runAction(["notch", "stop"])
   }
 
   // Floating terminal running the full TUI, for anything beyond a quick
@@ -273,17 +381,21 @@ Panel {
   onOpenedChanged: if (opened) {
     tasksNeedFreshSort = true
     lastActiveKey = ""
+    cursorActive = false
+    selectedIndex = 0
     refreshTasks()
     refreshProjects()
     refreshClients()
+    refreshSummary()
   } else {
-    quickAdding = false
+    cancelQuickAdd()
     editingTimer = false
   }
 
   Process {
     id: statusProc
     command: ["notch", "status", "-json"]
+    onExited: function(exitCode) { root.notchAvailable = exitCode === 0 }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -305,6 +417,7 @@ Panel {
         if (root.tasksRefreshPending) {
           root.tasksRefreshPending = false
           root.refreshTasks()
+          root.refreshSummary()
         }
       }
     }
@@ -331,6 +444,22 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.allProjects = Model.parseProjects(text)
+    }
+  }
+
+  Process {
+    id: summaryProc
+    command: ["notch", "summary", "-json"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var parsed = Model.parseSummary(text)
+        root.summaryAvailable = parsed !== null
+        if (parsed) {
+          root.summaryTodaySeconds = parsed.todaySeconds
+          root.summaryWeekSeconds = parsed.weekSeconds
+        }
+      }
     }
   }
 
@@ -364,12 +493,29 @@ Panel {
   // this Process's onExited never itself waits for or re-renders from.
   // tasksRefreshPending makes refreshTasks() fire only once status has
   // actually landed, so displayedTasks always reads a consistent pair.
+  //
+  // A non-zero exit surfaces notch's own stderr as lastError. Read via
+  // Qt.callLater so the stderr collector has flushed by the time it's read.
   Process {
     id: actionProc
-    onExited: {
+    stderr: StdioCollector { id: actionStderr }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        Qt.callLater(function() {
+          var msg = (actionStderr.text || "").trim().split("\n")[0]
+          root.lastError = msg !== "" ? msg : ("notch exited with code " + exitCode)
+          errorClearTimer.restart()
+        })
+      }
       root.tasksRefreshPending = true
       root.refreshStatus()
     }
+  }
+
+  Timer {
+    id: errorClearTimer
+    interval: 8000
+    onTriggered: root.lastError = ""
   }
 
   Process {
@@ -503,6 +649,7 @@ Panel {
     labelVisible: false
     hasVisualContent: true
     tooltipText: root.statusTooltip
+      + (root.summaryAvailable ? "\nToday " + Model.formatSeconds(root.todaySeconds) : "")
     // Whole-button fallback: catches the cross-widget popout-switch path
     // (KeyboardPanel's dismissArea calls triggerPress() directly on the
     // registered click target, bypassing normal hit-testing entirely) and
@@ -618,6 +765,22 @@ Panel {
       blocked: root.quickAdding || root.editingTimer
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
+      onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveCursor(dy) }
+      // Enter/Space on a selected row toggles that row; with nothing
+      // selected they act on the hero instead (stop, or resume the last
+      // task), so "open popout, Space" is a one-key stop/resume.
+      onActivateRequested: {
+        if (root.cursorActive && root.selectedIndex < root.visibleTasks.length)
+          root.toggleTask(root.visibleTasks[root.selectedIndex])
+        else
+          root.heroAction()
+      }
+      onTextKey: function(t) {
+        if (t === "n" || t === "N" || t === "+") root.openQuickAdd()
+        else if (t === "e" || t === "E") root.openEditTimer()
+        else if (t === "s" || t === "S") { if (root.running) root.stopTimer() }
+        else if (t === "o" || t === "O") { root.openTui(); root.close() }
+      }
 
       Column {
         id: column
@@ -638,21 +801,22 @@ Panel {
           // A large clickable stop button while running (not just an
           // icon) -- same md-stop glyph and "stop, not pause" reasoning
           // as the bar icon and list rows, just sized to match the hero's
-          // own visual weight instead of a small bar-icon slot. Disabled
-          // (no hover/click) when idle -- there's nothing to stop.
+          // own visual weight instead of a small bar-icon slot. Idle, it
+          // becomes a play button that resumes the last task (heroMetaText
+          // names it); only with no history at all is there nothing to do.
           PanelActionButton {
             id: heroIcon
-            iconText: root.running ? "󰓛" : "󱎫"
+            iconText: root.running ? "󰓛" : (root.resumeTask ? "󰐊" : "󱎫")
             fontFamily: root.bar.fontFamily
             fontSize: Style.font.display
             size: Style.space(48)
             foreground: root.bar.foreground
             hoverColor: root.running ? root.bar.urgent : root.bar.foreground
-            enabled: root.running
-            tooltipText: root.running ? "Stop timer" : ""
+            enabled: root.running || root.resumeTask !== null
+            tooltipText: root.running ? "Stop timer (s)" : (root.resumeTask ? "Resume last task (space)" : "")
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            onClicked: root.stopTimer()
+            onClicked: root.heroAction()
           }
 
           // Clickable to edit the running entry's client/project/notes --
@@ -734,13 +898,68 @@ Panel {
             id: heroTime
             textFormat: Text.PlainText
             text: root.heroTimeText
-            color: root.bar.foreground
+            color: root.running ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.4)
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.displayLarge
             font.bold: true
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
           }
+        }
+
+        // ---------- Today / this week ----------
+        // Always present once summary is available (not gated on running),
+        // so starting/stopping never shifts the layout below it.
+        Row {
+          visible: root.summaryAvailable
+          width: parent.width
+          spacing: Style.space(18)
+
+          Repeater {
+            model: [
+              { label: "TODAY", seconds: root.todaySeconds },
+              { label: "THIS WEEK", seconds: root.weekSeconds }
+            ]
+            Row {
+              required property var modelData
+              spacing: Style.space(6)
+
+              Text {
+                textFormat: Text.PlainText
+                text: modelData.label
+                color: Qt.darker(root.bar.foreground, 1.4)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1.2
+                anchors.baseline: totalValue.baseline
+              }
+
+              Text {
+                id: totalValue
+                textFormat: Text.PlainText
+                text: Model.formatSeconds(modelData.seconds)
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+            }
+          }
+        }
+
+        // Last failed action's own message from notch (see actionProc).
+        Text {
+          visible: root.lastError !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          text: root.lastError
+          color: root.bar.urgent
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.Wrap
+          maximumLineCount: 3
+          elide: Text.ElideRight
         }
 
         // ---------- Edit form, for the running entry ----------
@@ -896,7 +1115,7 @@ Panel {
               iconText: root.quickAdding ? "󰅖" : "󰐕"
               fontFamily: root.bar.fontFamily
               foreground: root.bar.foreground
-              tooltipText: root.quickAdding ? "Cancel" : "Add timer"
+              tooltipText: root.quickAdding ? "Cancel" : "Add timer (n)"
               bordered: true
               onClicked: root.quickAdding ? root.cancelQuickAdd() : root.openQuickAdd()
             }
@@ -940,13 +1159,29 @@ Panel {
               anchors.right: parent.right
               anchors.rightMargin: Style.space(10)
               anchors.verticalCenter: parent.verticalCenter
-              placeholderText: "Task name…"
+              placeholderText: "New task, or type to find a recent one…"
               foreground: root.bar.foreground
               font.family: root.bar.fontFamily
+              // Typing narrows the list below (visibleTasks); a changed
+              // query drops any arrow-picked row so Enter can't restart
+              // something that's no longer what the text describes.
+              onTextChanged: {
+                root.quickAddQuery = text
+                root.cursorActive = false
+                root.selectedIndex = 0
+              }
               onAccepted: root.submitQuickAdd()
               Keys.onPressed: function(event) {
-                if (event.key === Qt.Key_Escape) {
-                  root.cancelQuickAdd()
+                if (event.key === Qt.Key_Down) {
+                  root.moveCursor(1)
+                  event.accepted = true
+                } else if (event.key === Qt.Key_Up) {
+                  if (root.cursorActive && root.selectedIndex === 0) root.cursorActive = false
+                  else root.moveCursor(-1)
+                  event.accepted = true
+                } else if (event.key === Qt.Key_Escape) {
+                  if (root.cursorActive) root.cursorActive = false
+                  else root.cancelQuickAdd()
                   event.accepted = true
                 }
               }
@@ -966,13 +1201,13 @@ Panel {
           // Button.qml uses internally) so the look still matches the rest
           // of the kit without Button's single-line layout.
           Repeater {
-            model: root.displayedTasks
+            model: root.visibleTasks
             Item {
               id: row
               required property var modelData
-              readonly property bool isActive: root.running
-                && modelData.projectId === root.statusProjectId
-                && modelData.task === root.statusTask
+              required property int index
+              readonly property bool isActive: root.isTaskActive(modelData)
+              readonly property bool rowSelected: root.cursorActive && root.selectedIndex === index
               readonly property int displaySeconds: (modelData.totalSeconds || 0) + (isActive ? root.elapsedSeconds : 0)
               readonly property string primaryLabel: modelData.task !== "" ? modelData.task : modelData.projectName
               // Client › Project, matching notch's own tooltip breadcrumb
@@ -991,17 +1226,24 @@ Panel {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: row.isActive ? root.stopTimer() : root.startTask(modelData.projectId, modelData.task)
+                onClicked: root.toggleTask(row.modelData)
+                // Hover moves the one shared cursor (CursorSurface's
+                // contract: a single highlight across mouse and keyboard).
+                // Not while quick-adding, though -- there the cursor is
+                // what Enter restarts, and a mouse that happens to rest
+                // over the list mustn't quietly change that.
+                onEntered: if (!root.quickAdding) {
+                  root.cursorActive = true
+                  root.selectedIndex = row.index
+                }
+                onExited: if (!root.quickAdding && root.selectedIndex === row.index) root.cursorActive = false
               }
 
-              Rectangle {
+              CursorSurface {
                 anchors.fill: parent
-                radius: Style.cornerRadius
-                color: row.isActive
-                  ? Style.selectedFillFor(root.bar.foreground, Color.accent)
-                  : (rowMouse.containsMouse ? Style.hoverFillFor(root.bar.foreground, Color.accent) : "transparent")
-
-                Behavior on color { ColorAnimation { duration: 120 } }
+                hasCursor: row.rowSelected
+                current: row.isActive
+                foreground: root.bar.foreground
               }
 
               // Fixed-size box, not a plain Text sized to its own glyph:
