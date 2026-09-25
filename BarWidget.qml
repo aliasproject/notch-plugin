@@ -2068,7 +2068,13 @@ Panel {
       return out
     }
     readonly property bool _showCreateHint: nameFieldRoot._query !== "" && !nameFieldRoot._hasExactMatch
-    readonly property bool _showSuggestions: nameFieldRoot._matches.length > 0 || nameFieldRoot._showCreateHint
+    // Only while this field has focus: otherwise a value written into it
+    // from outside (the project auto-filled after a client change) or
+    // left behind on moving to the next field kept its list open under a
+    // field you weren't using. Clicking a suggestion doesn't steal focus
+    // (its MouseArea isn't focusable), so the list stays up for the click.
+    readonly property bool _showSuggestions: nameFieldInput.activeFocus
+      && (nameFieldRoot._matches.length > 0 || nameFieldRoot._showCreateHint)
 
     // Resets whenever the search text changes, which is the only thing
     // that meaningfully invalidates a stale highlighted index (_matches
