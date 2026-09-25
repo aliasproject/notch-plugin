@@ -76,6 +76,10 @@ Panel {
   // typing the real one -- with the current value as their placeholder;
   // left empty they keep it, since blank means "unchanged" on save.
   property bool editingUncategorized: false
+  // Client/project as the form opened (after the Uncategorized blanking
+  // above), so changing the client back restores the original project.
+  property string editOrigClient: ""
+  property string editOrigProject: ""
   property real nowMs: Date.now()
   // true right before a refresh that should re-sort to the server's true
   // recency order (a fresh open); false for a refresh triggered by a
@@ -376,6 +380,43 @@ Panel {
     }
     return null
   }
+  // A changed client makes the project field's old value suspect: notch
+  // resolves --project-name *under the new client*, creating it there if
+  // it doesn't exist, so a leftover "Website" from the old client would
+  // quietly become a new "Website" project for the new one. So on every
+  // client edit: keep the project only if the new client has one by that
+  // name; otherwise clear it -- then fill in the client's project if it
+  // has exactly one, or restore the original if the client is back to
+  // what it was.
+  function onEditClientChanged() {
+    var client = editClientText.trim()
+    var project = editProjectText.trim()
+    var c = editMatchedClient
+    var theirs = c ? allProjects.filter(function(p) { return p.clientId === c.id }) : []
+
+    if (project !== "") {
+      var q = project.toLowerCase()
+      if (theirs.some(function(p) { return p.name.toLowerCase() === q })) return
+      if (client.toLowerCase() === editOrigClient.toLowerCase() && q === editOrigProject.toLowerCase()) return
+      project = ""
+    }
+    if (client.toLowerCase() === editOrigClient.toLowerCase() && editOrigProject !== "") project = editOrigProject
+    else if (theirs.length === 1) project = theirs[0].name
+
+    editProjectText = project
+    editProjectField.text = project
+  }
+
+  // What a blank project will do once saved with a changed client (see
+  // ResolveOrCreateProject: the client's name doubles as the project's).
+  readonly property string editProjectHint: {
+    if (!editingTimer || editMode === "session") return ""
+    var client = editClientText.trim()
+    if (client === "" || editProjectText.trim() !== "") return ""
+    if (client.toLowerCase() === editOrigClient.toLowerCase()) return ""
+    return "No project picked: it'll go under a project named “" + client + "”."
+  }
+
   // Task mode: what saving will do. A rename/move that lands on another
   // task already in the list merges into it (notch edit --from-* does
   // that on its own); say so before saving. Only the loaded recent tasks
@@ -523,6 +564,8 @@ Panel {
       client = ""
       project = ""
     }
+    editOrigClient = client
+    editOrigProject = project
     editTaskText = task; editTaskField.text = task
     editClientText = client; editClientField.text = client
     editProjectText = project; editProjectField.text = project
@@ -1446,8 +1489,14 @@ Panel {
               options: root.allClients
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
-              onTextEdited: function(t) { root.editClientText = t }
-              onOptionSelected: function(opt) { root.editClientText = opt.name }
+              onTextEdited: function(t) {
+                root.editClientText = t
+                root.onEditClientChanged()
+              }
+              onOptionSelected: function(opt) {
+                root.editClientText = opt.name
+                root.onEditClientChanged()
+              }
               onAdvanceRequested: editProjectField.focusField()
             }
 
@@ -1529,7 +1578,8 @@ Panel {
               visible: text !== ""
               width: parent.width
               textFormat: Text.PlainText
-              text: root.editError !== "" ? root.editError : root.editTaskHint
+              text: root.editError !== "" ? root.editError
+                : [root.editProjectHint, root.editTaskHint].filter(function(h) { return h !== "" }).join("\n")
               color: root.editError !== "" ? root.bar.urgent : Qt.darker(root.bar.foreground, 1.4)
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.bodySmall
