@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -1297,7 +1298,7 @@ Panel {
               radius: Style.cornerRadius
               visible: root.running
               color: heroLabelsMouse.containsMouse
-                ? Style.hoverFillFor(root.bar.foreground, Color.accent) : "transparent"
+                ? Style.hoverFillFor(root.bar.foreground, Commons.Color.accent) : "transparent"
               Behavior on color { ColorAnimation { duration: 120 } }
             }
 
@@ -1432,7 +1433,7 @@ Panel {
           visible: root.editingTimer
           radius: Style.cornerRadius
           color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.06)
-          borderSpec: Border.controlSpec("normal", root.bar.foreground, Color.accent)
+          borderSpec: Border.controlSpec("normal", root.bar.foreground, Commons.Color.accent)
           implicitHeight: editForm.implicitHeight + Style.space(20)
 
           Column {
@@ -1912,7 +1913,7 @@ Panel {
                     text: (row.secondaryLabel !== "" ? " · " : "") + row.billing
                     // Paid in the accent, invoiced dim -- the TUI's own
                     // badge weighting.
-                    color: row.billing === "paid" ? Color.accent : Qt.darker(root.bar.foreground, 1.4)
+                    color: row.billing === "paid" ? Commons.Color.accent : Qt.darker(root.bar.foreground, 1.4)
                     font.family: root.bar.fontFamily
                     font.pixelSize: Style.font.caption
                     anchors.left: secondaryText.right
@@ -1942,7 +1943,7 @@ Panel {
                 visible: row.isSession && (row.entry.paid || row.entry.invoiced)
                 textFormat: Text.PlainText
                 text: row.isSession && row.entry.paid ? "PAID" : "INVOICED"
-                color: row.isSession && row.entry.paid ? Color.accent : Qt.darker(root.bar.foreground, 1.4)
+                color: row.isSession && row.entry.paid ? Commons.Color.accent : Qt.darker(root.bar.foreground, 1.4)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
@@ -2034,8 +2035,8 @@ Panel {
     property string text: ""
     property var options: []   // [{id, name, ...}, ...] -- name is matched on
     property string placeholderText: ""
-    property color foreground: Color.foreground
-    property color accent: Color.accent
+    property color foreground: Commons.Color.foreground
+    property color accent: Commons.Color.accent
     property string fontFamily: Style.font.family
 
     signal textEdited(string text)
