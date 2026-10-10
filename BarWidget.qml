@@ -1695,12 +1695,13 @@ Panel {
           // array), and a delegate created under a resting pointer gets a
           // hover of its own. Only real pointer movement may move the
           // cursor, or a poll would steal the keyboard selection. Measured
-          // against the top-anchored popout column, not this list: the
-          // list itself shifts when the edit form, totals or an error line
-          // show or hide.
+          // against the popout's full-screen window, which never moves:
+          // this list and the card around it shift when the edit form,
+          // totals or an error line show or hide (the card's top moves
+          // too with a bottom or side bar).
           PointerMoveGate {
             id: pointerGate
-            referenceItem: column
+            referenceItem: taskList.Window.contentItem
           }
 
           Item {

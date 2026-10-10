@@ -195,7 +195,8 @@ function formatSessionLabel(startIso, endIso, nowMs) {
 // keeps the AM/PM of meridiemFromMs (the time the field was pre-filled
 // with), so retyping "2:00 PM" as "2:15" stays in the afternoon; with no
 // meridiemFromMs it's taken as written ("9" is 9 AM). A bare 12 is noon,
-// and 0 and 13-23 are always 24-hour.
+// unless the field was pre-filled with a 12 AM time (12:40 AM retyped as
+// "12:30" stays just after midnight). 0 and 13-23 are always 24-hour.
 function parseClockTime(text, dayStartMs, meridiemFromMs) {
   var m = String(text || "").trim().toLowerCase().match(/^(\d{1,2})(?::?(\d{2}))?\s*(a|am|p|pm)?$/)
   if (!m) return NaN
@@ -209,8 +210,10 @@ function parseClockTime(text, dayStartMs, meridiemFromMs) {
     if (ampm === "p") h += 12
   } else if (h > 23) {
     return NaN
-  } else if (h >= 1 && h <= 11 && meridiemFromMs !== undefined && !isNaN(meridiemFromMs)) {
-    if (new Date(meridiemFromMs).getHours() >= 12) h += 12
+  } else if (meridiemFromMs !== undefined && !isNaN(meridiemFromMs)) {
+    var hintHour = new Date(meridiemFromMs).getHours()
+    if (h >= 1 && h <= 11 && hintHour >= 12) h += 12
+    else if (h === 12 && hintHour === 0) h = 0
   }
   var d = new Date(dayStartMs)
   d.setHours(h, min, 0, 0)
