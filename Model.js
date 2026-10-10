@@ -191,11 +191,11 @@ function formatSessionLabel(startIso, endIso, nowMs) {
 
 // A session's start or end as typed into the edit form: "9", "9:05",
 // "905", "9:05pm", "9:05 PM", "21:05". Returns ms on the local day that
-// dayStartMs begins, or NaN if unreadable. Without am/pm, an hour of 1-12
+// dayStartMs begins, or NaN if unreadable. Without am/pm, an hour of 1-11
 // keeps the AM/PM of meridiemFromMs (the time the field was pre-filled
 // with), so retyping "2:00 PM" as "2:15" stays in the afternoon; with no
-// meridiemFromMs it's taken as written ("9" is 9 AM). 0 and 13-23 are
-// always 24-hour.
+// meridiemFromMs it's taken as written ("9" is 9 AM). A bare 12 is noon,
+// and 0 and 13-23 are always 24-hour.
 function parseClockTime(text, dayStartMs, meridiemFromMs) {
   var m = String(text || "").trim().toLowerCase().match(/^(\d{1,2})(?::?(\d{2}))?\s*(a|am|p|pm)?$/)
   if (!m) return NaN
@@ -209,8 +209,8 @@ function parseClockTime(text, dayStartMs, meridiemFromMs) {
     if (ampm === "p") h += 12
   } else if (h > 23) {
     return NaN
-  } else if (h >= 1 && h <= 12 && meridiemFromMs !== undefined && !isNaN(meridiemFromMs)) {
-    h = h % 12 + (new Date(meridiemFromMs).getHours() >= 12 ? 12 : 0)
+  } else if (h >= 1 && h <= 11 && meridiemFromMs !== undefined && !isNaN(meridiemFromMs)) {
+    if (new Date(meridiemFromMs).getHours() >= 12) h += 12
   }
   var d = new Date(dayStartMs)
   d.setHours(h, min, 0, 0)

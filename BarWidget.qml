@@ -1694,10 +1694,13 @@ Panel {
           // Rows are recreated on every refresh (visibleItems is a plain
           // array), and a delegate created under a resting pointer gets a
           // hover of its own. Only real pointer movement may move the
-          // cursor, or a poll would steal the keyboard selection.
+          // cursor, or a poll would steal the keyboard selection. Measured
+          // against the top-anchored popout column, not this list: the
+          // list itself shifts when the edit form, totals or an error line
+          // show or hide.
           PointerMoveGate {
             id: pointerGate
-            referenceItem: taskList
+            referenceItem: column
           }
 
           Item {
