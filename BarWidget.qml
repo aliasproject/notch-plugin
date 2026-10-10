@@ -271,6 +271,7 @@ Panel {
   // Follow the highlighted item to its new position; only if it's gone
   // (deleted, filtered out) fall back to clamping the old index.
   onVisibleItemsChanged: {
+    pointerGate.reset()
     if (visibleItems.length === 0) {
       cursorActive = false
       return
@@ -309,6 +310,7 @@ Panel {
   }
 
   function moveCursor(dy) {
+    pointerGate.reset()
     if (visibleItems.length === 0) return
     if (!cursorActive) {
       cursorActive = true
@@ -425,6 +427,8 @@ Panel {
     if (!editingTimer || editMode === "session") return ""
     var client = editClientText.trim()
     var project = editProjectText.trim()
+    if (client === "" && project === "" && (editOrigClient !== "" || editOrigProject !== ""))
+      return "Both blank keeps the current client and project."
     if (!_editPlacementChanged(client, project)) return ""
     if (client !== "" && project === "")
       return "No project picked: it'll go under a project named “" + client + "”."
@@ -441,12 +445,20 @@ Panel {
     if (editMode !== "task" || !editTarget) return ""
     var t = editTarget
     var newTask = editTaskText.trim() !== "" ? editTaskText.trim() : t.task
-    var newClient = (editClientText.trim() !== "" ? editClientText.trim() : t.clientName).toLowerCase()
-    var newProject = (editProjectText.trim() !== "" ? editProjectText.trim() : t.projectName).toLowerCase()
+    // Where notch will file it (ResolveOrCreateProject): unchanged stays
+    // put; a blank project takes the client's name; a blank client
+    // matches the project under any client.
+    var client = editClientText.trim()
+    var project = editProjectText.trim()
+    var moved = _editPlacementChanged(client, project)
+    var newClient = (moved ? client : t.clientName).toLowerCase()
+    var newProject = (moved ? (project !== "" ? project : client) : t.projectName).toLowerCase()
     for (var i = 0; i < recentTasks.length; i++) {
       var o = recentTasks[i]
       if (Model.taskKey(o) === Model.taskKey(t)) continue
-      if (o.task === newTask && o.projectName.toLowerCase() === newProject && o.clientName.toLowerCase() === newClient) {
+      var sameProject = moved ? o.projectName.toLowerCase() === newProject : o.projectId === t.projectId
+      var sameClient = newClient === "" || o.clientName.toLowerCase() === newClient
+      if (o.task === newTask && sameProject && sameClient) {
         var n = o.entryCount || 0
         return "Merges into the existing “" + _taskName(o) + "” (" + n + (n === 1 ? " session)." : " sessions).")
       }
@@ -557,7 +569,8 @@ Panel {
     if (cursorItem && cursorItem.kind === "task") {
       var picked = cursorItem.task
       cancelQuickAdd()
-      toggleTask(picked)
+      // Already running: nothing to restart, and toggling would stop it.
+      if (!isTaskActive(picked)) toggleTask(picked)
       return
     }
     var task = quickAddField.text.trim()
@@ -616,8 +629,9 @@ Panel {
     Qt.callLater(function() { editTaskField.forceActiveFocus() })
   }
 
-  // One session: its start/end times (same day; an end earlier than the
-  // start means it ran past midnight) and notes.
+  // One session: its start/end times (on the session's own day; an end
+  // earlier than the start is the next day only for a session that
+  // already ran past midnight) and notes.
   function openEditSession(entry, t) {
     var startMs = Date.parse(entry.startTime)
     var endText = entry.endTime ? Model.formatClockTime(Date.parse(entry.endTime)) : ""
@@ -644,13 +658,16 @@ Panel {
   // with. Only then are --client-name/--project-name sent: re-sending an
   // untouched pair would re-resolve the project by name, which can land on
   // another client's same-named project.
+  // Both blank isn't a move: notch has no way to send an entry back to
+  // Uncategorized, so nothing would be sent and nothing would change.
   function _editPlacementChanged(clientName, projectName) {
+    if (clientName === "" && projectName === "") return false
     return clientName.toLowerCase() !== editOrigClient.toLowerCase()
       || projectName.toLowerCase() !== editOrigProject.toLowerCase()
   }
 
   function submitEditTimer() {
-    if (actionProc.running) return
+    if (actionProc.running) { editError = "Still finishing the last change. Try again in a moment."; return }
     var clientName = editClientText.trim()
     var projectName = editProjectText.trim()
     var task = editTaskText.trim()
@@ -679,7 +696,7 @@ Panel {
       var e = editTarget.entry
       var origStartMs = Date.parse(e.startTime)
       var dayMs = Model.startOfDayMs(origStartMs)
-      var startMs = Model.parseClockTime(editStartText, dayMs)
+      var startMs = Model.parseClockTime(editStartText, dayMs, origStartMs)
       if (isNaN(startMs)) { editError = "Start: use a time like 9:05 AM or 14:30."; return }
       cmd = ["notch", "edit", "--id", String(e.id)]
       // Only send what changed: re-sending an untouched start would round
@@ -691,7 +708,7 @@ Panel {
       }
       if (e.endTime) {
         var origEndMs = Date.parse(e.endTime)
-        var endMs = Model.parseClockTime(editEndText, dayMs)
+        var endMs = Model.parseClockTime(editEndText, dayMs, origEndMs)
         if (isNaN(endMs)) { editError = "End: use a time like 9:40 AM or 15:10."; return }
         if (Model.formatClockTime(endMs) === Model.formatClockTime(origEndMs)) {
           endMs = origEndMs
@@ -701,7 +718,7 @@ Panel {
           // likely a typo (5:30 meant as PM), and moving it a day would
           // quietly save a ~20 hour session.
           if (endMs < startMs && Model.startOfDayMs(origEndMs) !== dayMs) {
-            endMs = Model.parseClockTime(editEndText, Model.nextDayStartMs(dayMs))
+            endMs = Model.parseClockTime(editEndText, Model.nextDayStartMs(dayMs), origEndMs)
           }
           cmd.push("--end", Model.toRfc3339(endMs))
         }
@@ -1424,18 +1441,20 @@ Panel {
           width: parent.width
           spacing: Style.space(18)
 
+          // A count, not an array of {label, seconds}: an inline array
+          // bound to the totals is a new model every second while a timer
+          // runs, which would recreate both rows each tick.
           Repeater {
-            model: [
-              { label: "TODAY", seconds: root.todaySeconds },
-              { label: "THIS WEEK", seconds: root.weekSeconds }
-            ]
+            model: 2
             Row {
-              required property var modelData
+              required property int index
+              readonly property string label: index === 0 ? "TODAY" : "THIS WEEK"
+              readonly property int seconds: index === 0 ? root.todaySeconds : root.weekSeconds
               spacing: Style.space(6)
 
               Text {
                 textFormat: Text.PlainText
-                text: modelData.label
+                text: parent.label
                 color: Qt.darker(root.bar.foreground, 1.4)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
@@ -1447,7 +1466,7 @@ Panel {
               Text {
                 id: totalValue
                 textFormat: Text.PlainText
-                text: Model.formatSeconds(modelData.seconds)
+                text: Model.formatSeconds(parent.seconds)
                 color: root.bar.foreground
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.body
@@ -1668,8 +1687,18 @@ Panel {
         // The Repeater below still naturally collapses to nothing on an
         // empty model without an explicit visible binding.
         Column {
+          id: taskList
           width: parent.width
           spacing: Style.space(8)
+
+          // Rows are recreated on every refresh (visibleItems is a plain
+          // array), and a delegate created under a resting pointer gets a
+          // hover of its own. Only real pointer movement may move the
+          // cursor, or a poll would steal the keyboard selection.
+          PointerMoveGate {
+            id: pointerGate
+            referenceItem: taskList
+          }
 
           Item {
             width: parent.width
@@ -1829,7 +1858,8 @@ Panel {
                 // Not while quick-adding, though -- there the cursor is
                 // what Enter restarts, and a mouse that happens to rest
                 // over the list mustn't quietly change that.
-                onEntered: if (!root.quickAdding) {
+                onPositionChanged: function(mouse) {
+                  if (root.quickAdding || !pointerGate.moved(row, mouse)) return
                   root.cursorActive = true
                   root.setCursor(row.index)
                 }
