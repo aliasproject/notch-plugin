@@ -14,8 +14,10 @@ import "Model.js" as Model
 // the shell needs to route clicks/IPC to it.
 //
 // notch itself has no daemon: every action here is a one-shot CLI call
-// ("notch status/tasks/start/stop -json") that opens the sqlite db, does
-// one thing, and exits — see notch's README "Scripting" section.
+// (status, tasks, summary, entries, projects and clients with -json to
+// read; start, stop, edit and delete to write) that opens the sqlite db,
+// does one thing, and exits -- see notch's README "Scripting" section.
+// "notch watch" runs alongside to report changes made elsewhere.
 // The popout's hero clock and the active task row's running time tick
 // locally between polls (from the "startTime" the status JSON reports),
 // rather than re-spawning notch every second, for a smooth live readout.
@@ -31,6 +33,10 @@ Panel {
   property string statusNotes: ""
   property string statusStartTime: ""
   property int statusProjectId: 0
+  // The running entry's id, so editing or discarding "the running timer"
+  // acts on the entry the form or dialog was opened for, not whatever is
+  // running by the time it's confirmed.
+  property int statusEntryId: 0
   property string statusProjectName: ""
   property string statusClientName: ""
   property var recentTasks: []
@@ -59,7 +65,8 @@ Panel {
   // What the edit form is editing: "running" (the running entry, from the
   // hero), "task" (a whole task row -- every session; task/client/project
   // only), or "session" (one entry; start/end/notes only). editTarget is
-  // that row's data: the task object, or {entry, task} for a session.
+  // that row's data: the task object, {entry, task} for a session, or
+  // {entryId, task, notes} for the running entry as of when it opened.
   property string editMode: "running"
   property var editTarget: null
   property string editStartText: ""
@@ -67,7 +74,8 @@ Panel {
   // Validation message for the session times; shown in the form.
   property string editError: ""
   // A whole-task edit that's been saved but not yet seen in a tasks
-  // refresh: {oldKey, newTask}. The row comes back under a new key, and
+  // refresh: {oldKey, newTask, projectId, projectName, clientName}. The
+  // row comes back under a new key, and
   // this is what lets the refresh keep it in place -- see
   // Model.applyTaskRename.
   property var pendingRename: null
@@ -408,14 +416,21 @@ Panel {
     editProjectField.text = project
   }
 
-  // What a blank project will do once saved with a changed client (see
-  // ResolveOrCreateProject: the client's name doubles as the project's).
+  // What a half-blank client/project pair will do once saved (see
+  // ResolveOrCreateProject). Only when the pair changed: an untouched pair
+  // isn't sent at all. A blank project makes the client's name double as
+  // the project's; a blank client matches the project by name across
+  // every client, or creates a client named after it.
   readonly property string editProjectHint: {
     if (!editingTimer || editMode === "session") return ""
     var client = editClientText.trim()
-    if (client === "" || editProjectText.trim() !== "") return ""
-    if (client.toLowerCase() === editOrigClient.toLowerCase()) return ""
-    return "No project picked: it'll go under a project named “" + client + "”."
+    var project = editProjectText.trim()
+    if (!_editPlacementChanged(client, project)) return ""
+    if (client !== "" && project === "")
+      return "No project picked: it'll go under a project named “" + client + "”."
+    if (client === "" && project !== "")
+      return "No client picked: it'll go under an existing “" + project + "” project of any client, or a new client named “" + project + "”."
+    return ""
   }
 
   // Task mode: what saving will do. A rename/move that lands on another
@@ -474,7 +489,13 @@ Panel {
   // Every mutating call goes through here so a failure is reported the
   // same way regardless of which button triggered it.
   function runAction(cmd) {
-    if (actionProc.running) return
+    // One at a time. Say so rather than drop it silently: a confirmed
+    // delete has already closed its dialog by the time it gets here.
+    if (actionProc.running) {
+      lastError = "Still finishing the last change. Try again in a moment."
+      errorClearTimer.restart()
+      return
+    }
     lastError = ""
     actionProc.command = cmd
     actionProc.running = true
@@ -581,7 +602,8 @@ Panel {
   // entry is almost always assigning a client/project after a quick add.
   function openEditTimer() {
     if (!running) return
-    _openEdit("running", null, statusTask, statusClientName, statusProjectName, statusNotes, "", "")
+    _openEdit("running", { entryId: statusEntryId, task: statusTask, notes: statusNotes },
+      statusTask, statusClientName, statusProjectName, statusNotes, "", "")
     // Same Qt.callLater-after-becoming-visible idiom qs.Ui's own
     // SearchableDropdown uses to focus its search field on open.
     Qt.callLater(function() { editClientField.focusField() })
@@ -618,21 +640,41 @@ Panel {
     restoreListFocus()
   }
 
+  // Whether the client/project fields differ from what the form opened
+  // with. Only then are --client-name/--project-name sent: re-sending an
+  // untouched pair would re-resolve the project by name, which can land on
+  // another client's same-named project.
+  function _editPlacementChanged(clientName, projectName) {
+    return clientName.toLowerCase() !== editOrigClient.toLowerCase()
+      || projectName.toLowerCase() !== editOrigProject.toLowerCase()
+  }
+
   function submitEditTimer() {
     if (actionProc.running) return
     var clientName = editClientText.trim()
     var projectName = editProjectText.trim()
     var task = editTaskText.trim()
     var notes = editNotesText.trim()
+    var moved = editMode !== "session" && _editPlacementChanged(clientName, projectName)
     var cmd
 
     if (editMode === "task") {
       var t = editTarget
+      var renamed = task !== "" && task !== t.task
+      if (!renamed && !moved) { cancelEditTimer(); return }
       cmd = ["notch", "edit", "--from-project", String(t.projectId), "--from-task", t.task]
-      if (task && task !== t.task) cmd.push("--task", task)
-      if (clientName) cmd.push("--client-name", clientName)
-      if (projectName) cmd.push("--project-name", projectName)
-      pendingRename = { oldKey: Model.taskKey(t), newTask: task !== "" ? task : t.task }
+      if (renamed) cmd.push("--task", task)
+      if (moved && clientName) cmd.push("--client-name", clientName)
+      if (moved && projectName) cmd.push("--project-name", projectName)
+      pendingRename = {
+        oldKey: Model.taskKey(t),
+        newTask: renamed ? task : t.task,
+        // Where the row should come back: its own project when it wasn't
+        // moved, else matched by name (notch resolves the id).
+        projectId: moved ? 0 : t.projectId,
+        projectName: projectName !== "" ? projectName : clientName,
+        clientName: clientName
+      }
     } else if (editMode === "session") {
       var e = editTarget.entry
       var origStartMs = Date.parse(e.startTime)
@@ -654,23 +696,31 @@ Panel {
         if (Model.formatClockTime(endMs) === Model.formatClockTime(origEndMs)) {
           endMs = origEndMs
         } else {
-          // Earlier than the start: it ran past midnight into the next day.
-          if (endMs < startMs) endMs += 86400000
+          // An end earlier than the start is read as the next day only for
+          // a session that already ran past midnight. Otherwise it's most
+          // likely a typo (5:30 meant as PM), and moving it a day would
+          // quietly save a ~20 hour session.
+          if (endMs < startMs && Model.startOfDayMs(origEndMs) !== dayMs) {
+            endMs = Model.parseClockTime(editEndText, Model.nextDayStartMs(dayMs))
+          }
           cmd.push("--end", Model.toRfc3339(endMs))
         }
         if (endMs < startMs) { editError = "The end is before the start."; return }
         if (endMs > Date.now()) { editError = "The end can't be in the future."; return }
       }
       if (startMs > Date.now()) { editError = "The start can't be in the future."; return }
-      if (notes !== (e.notes || "")) cmd.push("--notes", notes)
+      if (notes !== (e.notes || "").trim()) cmd.push("--notes", notes)
     } else {
-      cmd = ["notch", "edit"]
-      if (clientName) cmd.push("--client-name", clientName)
-      if (projectName) cmd.push("--project-name", projectName)
-      if (task) cmd.push("--task", task)
+      // Pinned to the entry the form opened on: plain "notch edit" would
+      // edit whatever is running at save time.
+      var entryId = editTarget && editTarget.entryId ? editTarget.entryId : 0
+      cmd = entryId > 0 ? ["notch", "edit", "--id", String(entryId)] : ["notch", "edit"]
+      if (moved && clientName) cmd.push("--client-name", clientName)
+      if (moved && projectName) cmd.push("--project-name", projectName)
+      if (task && task !== editTarget.task) cmd.push("--task", task)
       // Sent only when changed, and then even if empty -- an explicit
       // --notes "" is how notch clears notes.
-      if (notes !== statusNotes) cmd.push("--notes", notes)
+      if (notes !== editTarget.notes.trim()) cmd.push("--notes", notes)
     }
 
     editError = ""
@@ -740,7 +790,8 @@ Panel {
       openDeleteConfirm(smsg, "Delete", ["notch", "delete", "--id", String(e.id)])
     } else if (heroHovered && running) {
       openDeleteConfirm("Discard “" + (statusTask !== "" ? statusTask : statusProjectName) + "”? "
-        + heroTimeText + " of tracked time will be deleted.", "Discard", ["notch", "delete"])
+        + heroTimeText + " of tracked time will be deleted.", "Discard",
+        statusEntryId > 0 ? ["notch", "delete", "--id", String(statusEntryId)] : ["notch", "delete"])
     }
   }
 
@@ -786,6 +837,7 @@ Panel {
         root.statusNotes = parsed.notes
         root.statusStartTime = parsed.startTime
         root.statusProjectId = parsed.projectId
+        root.statusEntryId = parsed.entryId
         root.statusProjectName = parsed.projectName
         root.statusClientName = parsed.clientName
         if (parsed.class === "running") root.lastActiveKey = Model.taskKey(parsed)
@@ -818,7 +870,7 @@ Panel {
         if (pr && !incoming.some(function(t) { return Model.taskKey(t) === pr.oldKey })) {
           root.pendingRename = null
           if (!root.tasksNeedFreshSort) {
-            var renamed = Model.applyTaskRename(previous, incoming, pr.oldKey, pr.newTask)
+            var renamed = Model.applyTaskRename(previous, incoming, pr)
             previous = renamed.previous
             if (renamed.newKey !== "") {
               if (root.expandedKey === pr.oldKey) {
@@ -928,6 +980,9 @@ Panel {
     stderr: StdioCollector { id: actionStderr }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
+        // A failed task edit never moves the row, so there's no rename for
+        // a later refresh to follow.
+        root.pendingRename = null
         Qt.callLater(function() {
           var msg = (actionStderr.text || "").trim().split("\n")[0]
           root.lastError = msg !== "" ? msg : ("notch exited with code " + exitCode)
@@ -1416,7 +1471,7 @@ Panel {
           elide: Text.ElideRight
         }
 
-        // ---------- Edit form, for the running entry ----------
+        // ---------- Edit form: running entry, task, or session ----------
         // Opened by clicking heroLabels (the running entry) or with `e` on
         // a task row or session -- see editMode for which fields each
         // shows. It sits here, under the hero, rather than inline under

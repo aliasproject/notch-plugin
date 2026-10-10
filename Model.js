@@ -1,7 +1,7 @@
-// Parsing/formatting helpers for the "notch status -json" / "notch
-// projects -json" output, kept out of BarWidget.qml the same way every
-// first-party panel (e.g. shell/plugins/panels/weather/Model.js) keeps its
-// parsing separate from layout. Both parsers fail closed to a safe default
+// Parsing/formatting helpers for notch's "-json" output (status, tasks,
+// summary, entries, projects, clients), kept out of BarWidget.qml the same
+// way every first-party panel (e.g. shell/plugins/panels/weather/Model.js)
+// keeps its parsing separate from layout. The parsers fail closed to a safe default
 // rather than throwing, since they run on whatever a Process happened to
 // print (an unbuilt/old notch binary, a transient empty stdout on process
 // spawn, etc).
@@ -11,7 +11,7 @@
 function parseStatus(raw) {
   var fallback = {
     text: "", tooltip: "No timer running", class: "idle",
-    task: "", notes: "", startTime: "", projectId: 0, projectName: "", clientName: ""
+    task: "", notes: "", startTime: "", projectId: 0, projectName: "", clientName: "", entryId: 0
   }
   if (!raw) return fallback
   try {
@@ -25,7 +25,8 @@ function parseStatus(raw) {
       startTime: typeof parsed.startTime === "string" ? parsed.startTime : "",
       projectId: typeof parsed.projectId === "number" ? parsed.projectId : 0,
       projectName: typeof parsed.projectName === "string" ? parsed.projectName : "",
-      clientName: typeof parsed.clientName === "string" ? parsed.clientName : ""
+      clientName: typeof parsed.clientName === "string" ? parsed.clientName : "",
+      entryId: typeof parsed.entryId === "number" ? parsed.entryId : 0
     }
   } catch (e) {
     return fallback
@@ -113,6 +114,15 @@ function filterTasks(tasks, query) {
 // totals from "notch summary" are.
 function startOfDayMs(nowMs) {
   var d = new Date(nowMs)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+// Midnight of the calendar day after dayStartMs. By date, not +24h, so a
+// DST change that night doesn't shift it an hour.
+function nextDayStartMs(dayStartMs) {
+  var d = new Date(dayStartMs)
+  d.setDate(d.getDate() + 1)
   d.setHours(0, 0, 0, 0)
   return d.getTime()
 }
@@ -265,23 +275,33 @@ function reorderTasksInPlace(previous, incoming) {
 // reorderTasksInPlace would treat as a brand-new row and append at the
 // bottom. This swaps the edited row's old entry in `previous` for its new
 // one in `incoming`, so the stable merge keeps it where it was. The new
-// row is the incoming one with the new task name that wasn't already
-// shown; if there's none (the edit merged into a task already on screen)
-// the old row is just dropped and the merged-into row keeps its place.
+// row is the incoming one that wasn't already shown, with the new task
+// name, in the same project when the task wasn't moved, or under the
+// project (and client, if one was given) it was moved to. If there's none
+// (the edit merged into a task already on screen) the old row is just
+// dropped and the merged-into row keeps its place.
+// `rename` is {oldKey, newTask, projectId, projectName, clientName}.
 // Returns {previous, newKey}; newKey is "" when there's nothing to follow.
-function applyTaskRename(previous, incoming, oldKey, newTask) {
+function applyTaskRename(previous, incoming, rename) {
   var shown = {}
   for (var i = 0; i < previous.length; i++) shown[taskKey(previous[i])] = true
+  var same = function(a, b) { return String(a || "").toLowerCase() === String(b || "").toLowerCase() }
+  var landed = function(t) {
+    if (rename.projectId > 0) return t.projectId === rename.projectId
+    return same(t.projectName, rename.projectName)
+      && (rename.clientName === "" || same(t.clientName, rename.clientName))
+  }
   var replacement = null
   for (var j = 0; j < incoming.length; j++) {
-    if (incoming[j].task === newTask && !shown[taskKey(incoming[j])]) {
-      replacement = incoming[j]
+    var t = incoming[j]
+    if (t.task === rename.newTask && !shown[taskKey(t)] && landed(t)) {
+      replacement = t
       break
     }
   }
   var out = []
   for (var k = 0; k < previous.length; k++) {
-    if (taskKey(previous[k]) === oldKey) {
+    if (taskKey(previous[k]) === rename.oldKey) {
       if (replacement) out.push(replacement)
     } else {
       out.push(previous[k])

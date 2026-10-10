@@ -9,16 +9,16 @@ A bar widget for aliasOS and Omarchy that shows your running [notch](https://git
   - Today's and this week's totals.
   - Your recent tasks: start or stop one with a click, or expand it to see its sessions.
   - Quick add: type a task name and press Enter. It starts under Uncategorized, and you can assign a client and project afterwards.
-  - Edit: change a running timer's, a task's or a single session's task, client, project and notes, or a session's start and end times.
+  - Edit: rename the running timer or a whole task, or move it to another client and project. Change the running timer's notes, or a single session's start time, end time and notes.
   - Delete a task, a single session, or the running timer, with confirmation.
   - Keyboard control: arrow keys to move and expand, Enter or Space to start or stop the selected row (or the running timer when nothing is selected), `n` to quick add, `e` to edit, `s` to stop, `o` to open the TUI, and `x` or Delete to delete.
   - A link that opens the full notch TUI.
 
-The widget has no daemon of its own. Every action is a one-shot `notch` CLI call (`status`, `tasks`, `summary`, `start`, `stop`, `edit` and `delete`, all with `-json` where they read). It also runs `notch watch` to pick up changes you make in the TUI right away.
+The widget has no daemon of its own. Every action is a one-shot `notch` CLI call: `status`, `tasks`, `summary`, `entries`, `projects` and `clients` (with `-json`) to read, and `start`, `stop`, `edit` and `delete` to write. It also runs `notch watch` to pick up changes you make in the TUI right away.
 
 ## Requirements
 
-- `notch` on your `PATH`. The popout's totals, edit and delete need the `summary`, `edit` and `delete` subcommands, which are newer than notch v0.9.0.
+- `notch` on your `PATH`. Some of the popout needs a notch newer than v0.9.0: the totals (`summary`), a task's sessions (`entries`), delete (`delete`), and editing a whole task or a session's times (`edit --from-project`/`--from-task`, `--start`/`--end`).
 - **aliasOS:** the shell's `Color` palette is reached as `Commons.Color`, which Qt 6.12 requires (see aliasOS's `docs/plugins.md`).
 
 ## Install
