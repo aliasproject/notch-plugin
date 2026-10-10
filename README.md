@@ -1,0 +1,54 @@
+# Notch bar widget
+
+A bar widget for aliasOS and Omarchy that shows your running [notch](https://github.com/aliasproject/notch) timer and lets you start, stop and edit time entries without opening the TUI.
+
+## What it does
+
+- **In the bar:** your running timer. Click it to open the popout.
+- **In the popout:**
+  - Today's and this week's totals.
+  - Your recent tasks: start or stop one with a click, or expand it to see its sessions.
+  - Quick add: type a task name and press Enter. It starts under Uncategorized, and you can assign a client and project afterwards.
+  - Edit: change a running timer's, a task's or a single session's task, client, project and notes, or a session's start and end times.
+  - Delete a task, a single session, or the running timer, with confirmation.
+  - Keyboard control: arrow keys to move and expand, Enter or Space to start or stop the selected row (or the running timer when nothing is selected), `n` to quick add, `e` to edit, `s` to stop, `o` to open the TUI, and `x` or Delete to delete.
+  - A link that opens the full notch TUI.
+
+The widget has no daemon of its own. Every action is a one-shot `notch` CLI call (`status`, `tasks`, `summary`, `start`, `stop`, `edit` and `delete`, all with `-json` where they read). It also runs `notch watch` to pick up changes you make in the TUI right away.
+
+## Requirements
+
+- `notch` on your `PATH`. The popout's totals, edit and delete need the `summary`, `edit` and `delete` subcommands, which are newer than notch v0.9.0.
+- **aliasOS:** the shell's `Color` palette is reached as `Commons.Color`, which Qt 6.12 requires (see aliasOS's `docs/plugins.md`).
+
+## Install
+
+On aliasOS:
+
+```sh
+aliasos-plugin-add https://github.com/aliasproject/notch-plugin
+aliasos-plugin-enable io.github.aliasproject.notch
+```
+
+It goes in the center section by default. You can drag it anywhere on the bar.
+
+## Develop
+
+Edit the files here, then copy them over the installed plugin and restart the shell. The shell loads plugins only once, at startup:
+
+```sh
+cp BarWidget.qml Model.js manifest.json ~/.config/aliasos/plugins/io.github.aliasproject.notch/
+aliasos-restart-shell
+```
+
+To open the popout without clicking:
+
+```sh
+quickshell ipc -p /usr/share/aliasos/shell call io.github.aliasproject.notch open
+```
+
+Errors from the plugin show up in `quickshell log -p /usr/share/aliasos/shell`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
