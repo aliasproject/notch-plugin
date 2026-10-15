@@ -1173,6 +1173,10 @@ Panel {
         text: root.running ? "󰓛" : "󱎫"
         fontFamily: button.fontFamily
         fontSize: Style.bar.iconFont
+        // Fitted and centred on its ink like the bar's own icons
+        // (BarIconButton): unfitted, the glyph drew a pixel taller than its
+        // neighbours and a pixel high of the bar's centre line.
+        paintedSize: Style.bar.iconSize
         color: button.foreground
       }
 
