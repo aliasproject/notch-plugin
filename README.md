@@ -20,6 +20,7 @@ The widget has no daemon of its own. Every action is a one-shot `notch` CLI call
 
 - `notch` on your `PATH`. Some of the popout needs notch v0.10.0 or later (`notch upgrade`): the totals (`summary`), a task's sessions (`entries`), delete (`delete`), and editing a whole task or a session's times (`edit --from-project`/`--from-task`, `--start`/`--end`).
 - **aliasOS:** the shell's `Color` palette is reached as `Commons.Color`, which Qt 6.12 requires (see aliasOS's `docs/plugins.md`).
+- **aliasOS 1.11.0 or later:** the bar icon is fitted with `OpticalGlyph.paintedSize`, which arrived with 1.11.0's bar icons.
 
 ## Install
 
